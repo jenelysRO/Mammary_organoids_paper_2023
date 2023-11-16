@@ -1,0 +1,3526 @@
+---
+title: "scRNA-seq analysis for organoids paper"
+author: "Jenelys Ruiz-Ortiz"
+date: '2023-09-28'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+#Load required packages
+
+#Make sure it's Seurat version 4.0.0
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(tidyverse)
+library(cowplot)
+library(ggraph)
+library(clustree)
+library(GGally)
+library(ggtree)
+library(future)
+
+```
+
+
+```{r}
+
+#Load organoid object
+
+SL02_Sobg_female <-readRDS(file = "/path/to/R_objects_organoid_paper/SL02_Sobj_female_unfiltered.rds")
+
+#Check initial quality of object
+
+#Add column to quantify mitochondrial content
+SL02_Sobg_female[["percent.mt"]] <- PercentageFeatureSet(SL02_Sobg_female, pattern = "^mt-")
+
+#Violin plot to view feature, counts and mitochondrial content per cell
+VlnPlot(SL02_Sobg_female, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+# Filter mitochondrial content and cells with >5,000 and <200 features 
+
+#Keeping cells with <10% mitochondrial content
+SL02_Sobg_female <- subset(SL02_Sobg_female, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+
+
+```
+
+```{r}
+
+#For Figure 1
+
+untreated_only <- subset(SL02_Sobg_female, subset = Condition == "Female Untreated")
+
+table(untreated_only@meta.data$Condition) #10,508 cells
+
+#Normalize
+untreated_only <- NormalizeData(untreated_only)
+
+#Find variable features per cell
+untreated_only <- FindVariableFeatures(untreated_only, selection.method = "vst", nfeatures = 2000)
+
+#Scale data
+untreated_only <- ScaleData(untreated_only)
+
+#Principal component analysis (PCA)
+untreated_only <- RunPCA(untreated_only, features = VariableFeatures(untreated_only)) 
+
+#View how cells cluster with PCA
+DimPlot(untreated_only, reduction = "pca", group.by = "Condition")
+
+```
+
+
+```{r}
+
+#Elbow plot to determine how many dimensions to use when finding neighbors
+ElbowPlot(untreated_only)
+
+```
+
+```{r}
+
+#Elbow plot indicates that the optimal number of dimensions is 10 
+untreated_only <- FindNeighbors(untreated_only, dims = 1:10)
+
+#Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+#Find clusters using a range of resolutions
+untreated_only <- FindClusters(object = untreated_only, resolution = resolution.range)
+
+clustree(untreated_only) #Clustree showed 0.3 resolution was optimal
+
+
+```
+
+```{r}
+
+#Find clusters
+untreated_only <- FindClusters(object = untreated_only, resolution = 0.3)
+
+#Reduce dimensions
+untreated_only <- RunUMAP(untreated_only, dims = 1:10)
+
+#Rename clusters starting from 1 instead of 0
+
+untreated_only$seurat_clusters <- as.factor(as.numeric(as.character(untreated_only$seurat_clusters)) + 1)
+
+untreated_only <- RenameIdents(untreated_only, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6",`6` = "7")
+
+
+#Plot UMAP
+DimPlot(untreated_only, reduction = "umap", label = TRUE) 
+
+```
+
+```{r}
+
+#Alterations to object for subsequent analyses
+#Adding column based on other column for further easy visualization:
+untreated_only@meta.data$Origin <- NA
+untreated_only@meta.data <- untreated_only@meta.data %>%
+  mutate(Origin = case_when(
+    endsWith(Condition, "Female Untreated") ~ "Mouse organoids"
+    ))
+
+```
+
+```{r}
+
+#Save object to computer
+saveRDS(untreated_only, file = "path/to/untreated_only_mice.rds")
+
+#Load object
+untreated_only <- readRDS(file = "patho/to/untreated_only_mice.rds")
+
+```
+
+
+```{r}
+
+#Cluster classifications
+
+#Cell cycle scoring 
+
+#Get genes
+s.genes <- cc.genes$s.genes
+s.genes
+
+g2m.genes <- cc.genes$g2m.genes
+g2m.genes
+
+
+#Add scores for gene markers for each cell cycle stage
+untreated_only <- CellCycleScoring(untreated_only, s.features = s.genes, g2m.features = g2m.genes)
+
+#Plot results
+DimPlot(untreated_only, reduction = "umap", split.by = "Phase")
+
+
+```
+
+```{r}
+
+#Characterizing clusters with markers from Henry et al. 2021
+
+m_myo_prog <- c("Epcam", "Lgals1", "Bptf", "Krt17", "Ppic", "Mdk", "Krt14", "Krt5", "Acta2", "Mgp", "Lmod", "Lhfp", "Cxcl14", "Serpina3n", "Cnn1", "Vcam1", "Nrg1", "Col7a1", "Nexn", "Il17b", "Mylk", "Sparc", "Lgr5", "Jag1", "Scn7a", "Trp63", "Lbp", "Tagln", "Bmpr2", "Fgf1", "Lipg", "Arc", "Id4", "Mme", "Mmp2", "Igfbp3") #murine myoepithelial progenitors
+
+
+m_luminal_hormone_neg_prog <- c("Epcam", "Krt8", "Krt18", "Rspo1", "Col9a1", "Aldh1a3", "Il1rn", "Csn1s1", "Tgfb3", "Bptf", "Kit", "Cxcl1", "Ndst1", "Cd14", "Gjb2", "Tagln", "Ppme1", "Notch3", "Parp1", "Bcl11a", "Fcgbp") #murine luminal hormone negative progenitors
+
+
+m_luminal_ductal_diff_fxyd2 <- c("Epcam", "Krt8", "Krt18", "Prlr", "Prrg2", "Ak3", "Cdk19", "Fxyd2", "Areg", "Stc2", "Prom1", "Esr1", "Pgr", "Cdo1", "Gstm2", "Wnt5", "Cxcl15", "Ly6a", "Tspan9", "Gltp", "Cd14", "Ppme1", "Adck5", "Dusp4", "Tph1", "Notch3", "Itpripl1", "Calca") #Murine luminal differentiated ductal (hormone sensing or LHS) Fxyd2+ cells
+
+
+m_luminal_alveolar_prog_lalba <- c("Epcam", "Krt8", "Krt18", "Col9a1", "Il1rn", "Itga2", "Csn1s1", "Car2", "Csn2", "Bptf", "Lalba", "Kit", "Armcx2", "Trf", "Cxcl1", "Ndst1", "Ezh2", "Ap1g1", "Areg", "Spp", "Sfxn3", "Cd14", "Snx27", "Mfsd5", "S100a8", "Lbp", "Gjb2", "Notch3", "Il6ra", "Kctd20", "Erf", "Ptbp2", "Ireb2") #Murine luminal alveolar (secretory or LASP) progenitors (Lalba+)
+
+
+m_luminal_alveolar_aldh1a3 <- c("Epcam", "Krt8", "Krt18", "Col9a1", "Aldh1a3", "Il1rn","Itga2", "Csn1s1", "Car2", "Csn2", "Ceacam1", "Bptf", "Kit", "Armcx2", "Csf3", "Cxcl1",  "Ndst1", "Ezh2", "Ap1g1", "Areg", "Cd14", "Snx27", "Lbp", "Bmpr2", "Egln3", "Erf", "Ptbp2") #Murine luminal alveolar (secretory or LASP) progenitors (Aldh1a3+)
+
+
+m_luminal_ductal_diff_rcan1 <- c("Epcam", "Krt8", "Krt18", "Prlr", "Armcx2","Ak3", "Cdk19", "Cited1", "Areg", "Stc2", "Rcan1", "Prom1", "Esr1", "Pgr", "Pak6", "Cdo1", "Wnt5", "Cxcl15", "Ly6a", "Tspan9", "Pir", "Fgb" , "Cd14", "Fam83g", "Dusp4", "Tph1", "Notch3", "Il6ra", "Itpripl2", "Calca", "Ptbp2")  #Murine luminal differentiated ductal (hormone sensing or LHS) Rcan1+ cells
+
+
+m_common_luminal_prog_tet2 <- c("Epcam", "Krt8", "Krt18", "Prlr", "Aldh1a3", "Il1rn","Itga2", "Csn1s1", "Car2", "Lgals1", "Csn2", "Tgfb3", "Bptf", "Lalba", "Kit","Armcx2", "Tet2", "Cxcl1", "Ndst1", "Ezh2", "Ap1g1", "Prrg2", "Ak3", "Cdk19", "Cited1", "Stc2", "Rcan1", "Esr1", "Pgr", "Sfxn3", "Pak6", "Cdo1", "Gstm2", "Wnt5", "Cxcl15", "Ly6a", "Cd14", "Snx27", "Mfsd5", "Lbp", "Gjb2", "Bmpr2", "Fam83g", "Rangrf", "Adck5", "Dusp4", "Tph1", "Notch3","Il6ra", "Itpripl2", "Calca", "Egln3", "Kctd20", "Erf", "Setd7", "Cwc22", "Ptbp2", "Ireb2", "Parp1", "Sms" ) #Murine common luminal progenitors (Tet2+)
+
+
+
+m_myo_diff <- c("Epcam", "Lgals1", "Krt17", "Krt14", "Krt5", "Acta2", "Mgp", "Lmod", "Oxtr", "Cxcl14", "Cnn1", "Mylk", "Sparc", "Tagln", "Bmpr2", "Igfbp3") #Murine myoepithelial
+
+
+m_bipotential_prog <- c("Epcam", "Krt8", "Krt18", "Prlr", "Lgals1", "Bptf", "Krt17","Cited1", "Acta2", "Tir", "Pgr", "Ebf1", "Cdo1", "Cxcl15", "Ly6a", "H2-eb1", "H2-ab1", "Srgn", "H2-Aa", "Gltp", "Krt14", "Krt5", "Lhfp", "Cxcl14", "Mylk", "Sparc", "Jag1", "Tagln", "Bmpr2", "Ppme1", "Dusp4", "Tph1", "Calca", "Sms", "Cd79a", "Cd74", "Ctss", "Sp110", "Cd52"  ) #Murine myoepithelial progenitors
+
+
+
+m_proliferating_lum_alveolar <- c("Epcam", "Krt8", "Krt18", "Col9a1", "Il1m", "Itga2", "Csn1s1", "Car2", "Lgals1", "Stmn1", "Csn2", "Tgfb3", "Mki67", "Lalba", "Lockd", "Kit", "Armcx2", "Cxcl1", "Ndst1", "H2afz", "Ezh2", "Ap1g1", "Ube2c", "Prrg2", "Ak3", "Cdk19", "Areg", "Sfxn3", "Mdk", "Ly6a", "Krt14", "Cd14", "Snx27", "Mfsd5", "Top2", "Lbp", "Gjb2", "Tagln", "Cenpa", "Bmpr2", "Fam83g", "Rangrf", "Ppme1", "Notch3", "Hmgb2", "Il6ra", "Itpripl2", "Kctd20", "Erf", "Setd7", "Cwc22", "Ptbp2", "Ireb2", "Parp1", "Sms", "Sp110", "Cxcr4") #Murine proliferating alveolar (secretory or LLASP) cells
+
+#All markers:
+
+#From combining all previous markers manually:
+test_EC_genes <- c(m_myo_prog, m_myo_diff, m_bipotential_prog ,m_luminal_hormone_neg_prog, m_luminal_ductal_diff_rcan1, m_common_luminal_prog_tet2, m_proliferating_lum_alveolar) 
+
+test_EC_genes <- unique(test_EC_genes)
+
+#From Henry et al. combined plot
+EC_genes <-c("Epcam","Krt5","Krt14","Krt17", "Krt7","Acta2", "Sparc", "Oxtr", "Mylk","Pdpn","Cxcl14","Trp63","Tagln","Chil1","Mgp",
+      "Lmod1","Vcam1","Tpm2","Lgals1","Mdk","Gas1","Krt8","Krt18","Cdo1","Cdk19","Cited1","Prom1","Esr1",
+      "Prlr","Pgr","Stc2","Cxcl15","Areg","Tspan9",
+      "Pir","Cd52","Cxcr4","Elf5","Cd14","Kit","Csn1s1","Csn2","Csn3","Ndst1",
+      "Col9a1","Il1rn","Aldh1a3","Itga2","Tgfb3","Lalba","Fcgbp","Bcl11a","Trf","S100a8","Spp1","Lars2","Gm42418","Stmn1","Mki67",
+      "Lockd","Ube2c","Top2a","Cenpa","Hmgb2")
+
+
+```
+
+```{r}
+
+#Plot each of the markers
+
+#Basic lineage markers first:
+
+DotPlot(untreated_only,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7", "Oxtr", "Csn2", "Csn3", "Prlr", "Pgr", "Esr1", "Tagln", "Krt17"), col.min = 0)+RotatedAxis() 
+
+```
+
+```{r}
+
+#Henry et al. markers:
+DotPlot(untreated_only,features = m_myo_prog)+RotatedAxis()
+DotPlot(untreated_only,features = m_luminal_hormone_neg_prog)+RotatedAxis() 
+DotPlot(untreated_only,features = m_luminal_ductal_diff_fxyd2 )+RotatedAxis() 
+DotPlot(untreated_only,features = m_luminal_alveolar_prog_lalba )+RotatedAxis() 
+DotPlot(untreated_only,features = m_luminal_alveolar_aldh1a3)+RotatedAxis()  
+DotPlot(untreated_only,features = m_luminal_ductal_diff_rcan1)+RotatedAxis() 
+DotPlot(untreated_only,features = m_common_luminal_prog_tet2)+RotatedAxis() 
+DotPlot(untreated_only,features = m_myo_diff)+RotatedAxis() 
+DotPlot(untreated_only,features = m_bipotential_prog)+RotatedAxis() 
+DotPlot(untreated_only,features = m_proliferating_lum_alveolar)+RotatedAxis()  
+DotPlot(untreated_only,features = EC_genes)+RotatedAxis()  
+```
+
+```{r}
+#Stem cell markers:
+
+DotPlot(untreated_only,features = c("Lgals1", "Krt15", "Lgr5"), col.min = 0)+RotatedAxis() 
+
+```
+
+```{r}
+
+#Markers for clusters 3 and 5 to determine differences between similar clusters
+
+cluster_3 <- subset(x = untreated_only, idents = "3")
+cluster_5 <- subset(x = untreated_only, idents = "5")
+
+#features in C3: (Fxyd3), (Cd14), (Cldn3), (Wfdc18), (Muc15)
+#features in C5:(Birc5), (Hmmr), (Melk), (Stmn)
+
+#Violin plot
+VlnPlot(untreated_only, features = c("Fxyd3", "Cd14", "Cldn3", "Wfdc18", "Muc15","Birc5", "Hmmr", "Melk", "Stmn1"  ), pt.size = 0)
+
+#Dotplot
+DotPlot(untreated_only,features = c("Fxyd3", "Cd14", "Cldn3", "Wfdc18", "Muc15","Birc5", "Hmmr", "Melk", "Stmn1")) + RotatedAxis()
+
+```
+
+```{r}
+
+#Rename clusters for manuscript - Murine Organoids (MO)
+
+#With classifications for Fig 2A
+untreated_only_names <- RenameIdents(untreated_only, `1` = "MO1. LASP1", `2` = "MO2. LHS1", `3` = "MO3. LASP2 ",`4` = "MO4. BMyo1",`5` = "MO5. LASP3 (Proliferating)", `6` = "MO6. BL", `7` = "MO7. LHS (Proliferating)")
+
+#UMAP with names
+DimPlot(untreated_only_names, reduction = "umap", label = FALSE) 
+
+#With correct numbering
+untreated_only_numbers <- RenameIdents(untreated_only, `1` = "MO1", `2` = "MO2", `3` = "MO3",`4` = "MO4",`5` = "MO5", `6` = "MO6", `7` = "MO7")
+
+#UMAP with numbering
+DimPlot(untreated_only_numbers, reduction = "umap", label = TRUE) 
+
+
+```
+
+
+```{r}
+
+#Build dendrogram to re-order clusters based on their relationship 
+
+untreated_only_numbers <- BuildClusterTree(untreated_only_numbers,dims=1:10)
+
+plot(untreated_only_numbers@tools$BuildClusterTree)
+
+
+```
+
+```{r}
+
+#Re-organize from bottom up, based on dendrogram 
+levels(untreated_only_numbers) <- c("MO5", "MO7", "MO4", "MO6", "MO2", "MO1", "MO3" )
+
+```
+
+```{r}
+
+#Plot all gene markers for paper with re-organized clusters
+
+DotPlot(untreated_only_numbers,features = EC_genes)+RotatedAxis()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))
+
+```
+
+
+```{r}
+#For Fig 1B
+
+#Ternary plots to demonstrate how each cluster segregates based on their lineage
+
+#Load libraries
+library(UCell)
+library(Matrix)
+library(vcd)
+
+#Define the score for basal, alveolar luminal and ductal luminal for each cell
+m_myo_prog_diff <- c("Epcam", "Lgals1", "Bptf", "Krt17", "Ppic", "Mdk", "Krt14", "Krt5", "Acta2", "Mgp", "Lmod", "Lhfp", "Cxcl14", "Serpina3n", "Cnn1", "Vcam1", "Nrg1", "Col7a1", "Nexn", "Il17b", "Mylk", "Sparc", "Lgr5", "Jag1", "Scn7a", "Trp63", "Lbp", "Tagln", "Bmpr2", "Fgf1", "Lipg", "Arc", "Id4", "Mme", "Mmp2", "Igfbp3", "Epcam", "Lgals1", "Krt17", "Krt14", "Krt5", "Acta2", "Mgp", "Lmod", "Oxtr", "Cxcl14", "Cnn1", "Mylk", "Sparc", "Tagln", "Bmpr2", "Igfbp3") #Differentiated myoepithelial cells
+
+m_myo_prog_diff <- unique(m_myo_prog_diff) #In case some genes are repeated, keep unique genes
+
+m_luminal_ductal_diff <- c("Epcam", "Krt8", "Krt18", "Prlr", "Prrg2", "Ak3", "Cdk19", "Fxyd2", "Areg", "Stc2", "Prom1", "Esr1", "Pgr", "Cdo1", "Gstm2", "Wnt5", "Cxcl15", "Ly6a", "Tspan9", "Gltp", "Cd14", "Ppme1", "Adck5", "Dusp4", "Tph1", "Notch3", "Itpripl1", "Calca", "Epcam", "Krt8", "Krt18", "Prlr", "Armcx2","Ak3", "Cdk19", "Cited1", "Areg", "Stc2", "Rcan1", "Prom1", "Esr1", "Pgr", "Pak6", "Cdo1", "Wnt5", "Cxcl15", "Ly6a", "Tspan9", "Pir", "Fgb" , "Cd14", "Fam83g", "Dusp4", "Tph1", "Notch3", "Il6ra", "Itpripl2", "Calca", "Ptbp2") #Differentiated ductal (hormone sensing or LHS) cells
+
+m_luminal_ductal_diff <- unique(m_luminal_ductal_diff)
+                                 
+
+m_luminal_alveolar <- c("Epcam", "Krt8", "Krt18", "Col9a1", "Il1rn", "Itga2", "Csn1s1", "Car2", "Csn2", "Bptf", "Lalba", "Kit", "Armcx2", "Trf", "Cxcl1", "Ndst1", "Ezh2", "Ap1g1", "Areg", "Spp", "Sfxn3", "Cd14", "Snx27", "Mfsd5", "S100a8", "Lbp", "Gjb2", "Notch3", "Il6ra", "Kctd20", "Erf", "Ptbp2", "Ireb2", "Csn3", "Aldh1a3", "Epcam", "Krt8", "Krt18", "Col9a1", "Aldh1a3", "Il1rn","Itga2", "Csn1s1", "Car2", "Csn2", "Ceacam1", "Bptf", "Kit", "Armcx2", "Csf3", "Cxcl1",  "Ndst1", "Ezh2", "Ap1g1", "Areg", "Cd14", "Snx27", "Lbp", "Bmpr2", "Egln3", "Erf", "Ptbp2", "Epcam", "Krt8", "Krt18", "Col9a1", "Il1m", "Itga2", "Csn1s1", "Car2", "Lgals1", "Stmn1", "Csn2", "Tgfb3", "Mki67", "Lalba", "Lockd", "Kit", "Armcx2", "Cxcl1", "Ndst1", "H2afz", "Ezh2", "Ap1g1", "Ube2c", "Prrg2", "Ak3", "Cdk19", "Areg", "Sfxn3", "Mdk", "Ly6a", "Krt14", "Cd14", "Snx27", "Mfsd5", "Top2", "Lbp", "Gjb2", "Tagln", "Cenpa", "Bmpr2", "Fam83g", "Rangrf", "Ppme1", "Notch3", "Hmgb2", "Il6ra", "Itpripl2", "Kctd20", "Erf", "Setd7", "Cwc22", "Ptbp2", "Ireb2", "Parp1", "Sms", "Sp110", "Cxcr4") #Differentiated alveolar (hsecretory or LASP) cells
+
+m_luminal_alveolar <- unique(m_luminal_alveolar)
+
+#Generate Scores and Add to Metadata of SOBJ
+untreated_only <- AddModuleScore_UCell(untreated_only,features = list(m_myo_diff), name = "BMyo")
+untreated_only <- AddModuleScore_UCell(untreated_only,features = list(m_luminal_ductal_diff), name = "LHS")
+untreated_only <- AddModuleScore_UCell(untreated_only,features = list(m_luminal_alveolar), name = "LASP")
+                                                                                   
+
+#Pull metadata column scores and generate lists with these values
+basal_Score <- untreated_only$signature_1BMyo
+LHS_Score <- untreated_only$signature_1LHS
+LASP_Score <- untreated_only$signature_1LASP
+
+#Generate a Dataframe with these lists
+scores_Df <- data.frame(basal_Score, LHS_Score, LASP_Score)
+
+#Scale
+scores_Df = scores_Df + 0.01
+
+#Color by seurat clusters
+my_cols <- c("1" = "#F8766D", "2" = "#ABA300", "3" = "#0CB702", "4" = "#00BE67", "5" = "#00B8E7", "6" = "#8494FF", "7" = "#FF61CC") 
+
+#Plot
+ternaryplot(scores_Df, scale = 1, col = my_cols[untreated_only$seurat_clusters], main = "Organoid MECs Lineage Identities",dimnames = c("Basal", "LHS", "LASP"))
+
+```
+
+
+```{r}
+
+#Individual ternary plots by lineage
+LASP_clusters_no_treatment <- subset(x = untreated_only, idents = c("1", "3", "5", "6"))
+LHS_clusters_no_treatment <- subset(x = untreated_only, idents = c("2", "7")) 
+BMyo_clusters_no_treatment <- subset(x = untreated_only, idents = "4") 
+
+#LASP first
+LASP_basal_Score <- LASP_clusters_no_treatment$signature_1BMyo
+LASP_LHS_Score <- LASP_clusters_no_treatment$signature_1LHS
+LASP_alv_Score <- LASP_clusters_no_treatment$signature_1LASP
+
+LASP_scores_Df <- data.frame(LASP_basal_Score, LASP_LHS_Score, LASP_alv_Score)
+LASP_scores_Df = LASP_scores_Df + 0.01
+
+
+ternaryplot(LASP_scores_Df, scale = 100, col = my_cols[LASP_clusters_no_treatment$seurat_clusters], dimnames = c("BMyo", "LHS", "LASP"), main = "Precursor Cells Lineage Identity" , pch = 20) 
+
+#LHS
+LHS_basal_Score <- LHS_clusters_no_treatment$signature_1BMyo
+LHS_LHS_Score <- LHS_clusters_no_treatment$signature_1LHS
+LHS_LASP_Score <- LHS_clusters_no_treatment$signature_1LASP
+
+LHS_scores_Df <- data.frame(LHS_basal_Score, LHS_LHS_Score, LHS_LASP_Score)
+LHS_scores_Df = LHS_scores_Df + 0.01
+
+
+ternaryplot(LHS_scores_Df, scale = 100, col = my_cols[LHS_clusters_no_treatment$seurat_clusters], dimnames = c("BMyo", "LHS", "LASP"), main = "LHS Cells Lineage Identity", pch = 20 )
+
+#BMyo
+BMyo_basal_Score <- BMyo_clusters_no_treatment$signature_1BMyo
+BMyo_BMyo_Score <- BMyo_clusters_no_treatment$signature_1LHS
+BMyo_LASP_Score <- BMyo_clusters_no_treatment$signature_1LASP
+
+BMyo_scores_Df <- data.frame(BMyo_basal_Score, BMyo_BMyo_Score, BMyo_LASP_Score)
+BMyo_scores_Df = BMyo_scores_Df + 0.01
+
+
+ternaryplot(BMyo_scores_Df, scale = 100, col =  my_cols[BMyo_clusters_no_treatment$seurat_clusters], dimnames = c("BMyo", "LHS", "LASP"), main = "BMyo Cells Lineage Identity", pch = 20)
+
+
+```
+
+```{r}
+
+
+#Mammary stem cell core signature from Enrichr - typed "mammary stem cell" 
+
+mammary_stem <- c("ABCG2", "AKT1", "ALDH1A1", "ALDH1A3", "ATM", "BANP", "BCDIN3D", "BMI1", "BRCA1", "BRCA2", "BTF3", "CCNK", "CD24", "CD274", "CD44", "CDH1", "CDK12", "CTNNB1", "EGFR", "EPCAM", "ERBB2", "ESR1", "EZH2", "FOXM1", "GATA3", "GINS2", "GLI1", "HIF1A", "HOXC8", "ICMT", "IL6", "ITGB1", "JPT2", "KDM7A", "KLF4", "LGR5", "MET", "MIR200C", "MIR34A", "MYC", "NANOG", "NES", "NEWENTRY", "NFE2L2", "NOTCH1", "OTUD3", "PARD3B", "PARP1", "PDZK1IP1", "PIK3CA", "PLCB2", "POU5F1", "PPP1R9B", "PRDM14", "PROM1", "PTEN", "SCUBE2", "SHH", "SIX2", "SLFN12", "SNAI1", "SNAI2", "SNRNP40", "SOX2", "SOX9", "SPC25", "ST3GAL1", "STAT3", "TARP", "TERT", "TFCP2L1", "TGFB1", "THORLNC", "TMCC3", "TMEM88", "TNFSF11", "TNN", "TP53", "TP53I11", "TP63", "TSPAN5", "TUNAR", "TWIST1", "UBP1", "UBXN2A", "UNC5A", "USP34", "USP37", "USP44", "VASN", "VEGFA", "WASHC1", "WWTR1", "XAB2", "YAP1", "ZEB1", "ZNF32", "ZNF532", "ZNF584", "ZSCAN4")
+
+mammary_stem <- str_to_title(mammary_stem) #Convert genes into mouse nomenclature
+
+untreated_only <- AddModuleScore_UCell(untreated_only, features = list(mammary_stem), name="mammary_stem") #Score cells for genes
+
+#Plot with gradient
+
+#Load library
+library(RColorBrewer)
+
+#Plot
+FeaturePlot(untreated_only, features = "signature_1mammary_stem", min.cutoff = 0)+ scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdBu")))
+
+
+```
+
+
+```{r}
+
+
+#GSEA analysis for hallmark terms enriched in each MO cluster
+
+#Calculate markers for each MO cluster
+untreated_only.markers <- FindAllMarkers(untreated_only, only.pos = TRUE)
+
+
+#Separate cluster 1
+untreated_only.markers_c1 <- untreated_only.markers[untreated_only.markers$cluster == 1,]
+
+#Function to convert markers to appropiate GSEA input format
+to.gsea <- function(marks){
+  marks <- marks[order(marks$p_val_adj, decreasing = FALSE),]
+  tmp <- marks
+  rownames(tmp) <- toupper(tmp$gene)
+  tmp <- within(tmp, rm('p_val','pct.1','pct.2','p_val_adj','cluster','gene'))
+  colnames(tmp) <- 'avg_log2FC'
+  tmp$id <- rownames(tmp)
+  out <- data.frame('id' = tmp$id,'avg_log2FC'=tmp$avg_log2FC)
+  return(out)
+}
+
+#Apply function
+cluster_1 <- to.gsea(untreated_only.markers_c1)
+write.table(cluster_1, '/path/to/unt_resln_0.3_c1_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+#Repeat for rest of clusters:
+untreated_only.markers_c2 <- untreated_only.markers[untreated_only.markers$cluster == 2,]
+cluster_2 <- to.gsea(untreated_only.markers_c2)
+write.table(cluster_2, '/path/to/unt_resln_0.3_c2_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+untreated_only.markers_c3 <- untreated_only.markers[untreated_only.markers$cluster == 3,]
+cluster_3 <- to.gsea(untreated_only.markers_c3)
+write.table(cluster_3, '/path/to/unt_resln_0.3_c3_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+untreated_only.markers_c4 <- untreated_only.markers[untreated_only.markers$cluster == 4,]
+cluster_4 <- to.gsea(untreated_only.markers_c4)
+write.table(cluster_4, '/path/to/unt_resln_0.3_c4_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_only.markers_c5 <- untreated_only.markers[untreated_only.markers$cluster == 5,]
+cluster_5 <- to.gsea(untreated_only.markers_c5)
+write.table(cluster_5, '/path/to/unt_resln_0.3_c5_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_only.markers_c6 <- untreated_only.markers[untreated_only.markers$cluster == 6,]
+cluster_6 <- to.gsea(untreated_only.markers_c6)
+write.table(cluster_6, '/path/to/unt_resln_0.3_c6_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_only.markers_c7 <- untreated_only.markers[untreated_only.markers$cluster == 7,]
+cluster_7 <- to.gsea(untreated_only.markers_c7)
+write.table(cluster_7, '/path/to/unt_resln_0.3_c7_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+#Process with GSEA - hallmark terms
+#Create csv file with all uregulated and downregulated terms in each MO cluster, with corresponding p values and normalized enrichment score (NES) 
+
+#Read file
+plot_cluster <- read.csv("/path/to/GSEA_runs_organoid_paper/MO_CLUSTERS/RESOLN_0.3/summary_plot.csv")
+
+#Keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Create column for log of the adjusted p value (-log(NOM.p.val + 0.01))
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+#Plot
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("Summary of enriched processes in each MO cluster") + xlab("Cluster") + ylab("Hallmark terms") + theme_bw() + scale_x_continuous(breaks = seq(1, 7, by = 1))
+
+
+```
+
+
+```{r}
+
+#Since MO3 had no significantly enriched terms - how is it different to MO1?
+
+
+#Find DEGs between both clusters
+cluster_3_1 <- FindMarkers(untreated_only, only.pos = TRUE, ident.1 = "3", ident.2 = "1")
+
+#Function to convert results to GSEA appropiate format
+to.gsea.2.way <- function(marks){
+  marks <- marks[order(marks$p_val_adj, decreasing = FALSE),]
+  tmp <- marks
+  tmp <- within(tmp, rm('p_val','pct.1','pct.2','p_val_adj'))
+  colnames(tmp) <- 'avg_log2FC'
+  tmp$id <- toupper(rownames(tmp))
+  out <- data.frame('id' = tmp$id,'avg_log2FC'=tmp$avg_log2FC)
+  return(out)
+}
+
+#Run function
+cluster_3_1_gsea <- to.gsea.2.way(cluster_3_1)
+
+#Save for GSEA analysis
+write.table(cluster_3_1_gsea, '/path/to/cluster3_1_MO_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+#Process with GSEA - hallmark terms
+#Create csv file with all uregulated and downregulated terms in each MO cluster, with corresponding p values and normalized enrichment score (NES) 
+
+
+#Plot GSEA results
+
+plot_cluster <- read.csv("/path/to/GSEA_runs_organoid_paper/MO3_vs_MO1_GSEA.GseaPreranked.1687885363928/summary_plot.csv")
+
+#Keep significant terms (pval < 0.05)
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Create column for log of the adjusted p value (-log(NOM.p.val + 0.01))
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+#Plot
+ggplot(plot_cluster_filt , aes(x = NES, y = reorder(NAME, FDR.q.val), col = FDR.q.val, size = NOM.p.val)) + geom_point() + xlim(-3,3) + geom_vline(xintercept = 0) + theme(axis.text = element_text(size = 10)) + ggtitle("Cluster MO3 vs MO1") +
+  xlab("Hallmark terms enriched in MO3") + ylab("Hallmark terms") + theme_bw()  
+
+```
+
+
+```{r}
+
+
+#Pseudotime analysis of MO clusters
+
+#Load Slingshot library
+library(slingshot)
+
+#Create new column in Seurat object with assigned cell identities 
+untreated_only@meta.data$cell.type <- NA
+untreated_only@meta.data[grepl("1",untreated_only@meta.data$seurat_clusters),]$cell.type <- "MO1. LASP1"
+untreated_only@meta.data[grepl("2",untreated_only@meta.data$seurat_clusters),]$cell.type <- "MO2. LHS1"
+untreated_only@meta.data[grepl("3",untreated_only@meta.data$seurat_clusters),]$cell.type <- "MO3. LASP2"
+untreated_only@meta.data[grepl("4",untreated_only@meta.data$seurat_clusters),]$cell.type <- "MO4. BMyo1"
+untreated_only@meta.data[grepl("5",untreated_only@meta.data$seurat_clusters),]$cell.type <- "MO5. LASP3 (Proliferating)"
+untreated_only@meta.data[grepl("6",untreated_only@meta.data$seurat_clusters),]$cell.type <- "MO6. BL"
+untreated_only@meta.data[grepl("7",untreated_only@meta.data$seurat_clusters),]$cell.type <- "MO7. LHS2 (Proliferating)"
+
+#Change the identities of each cluster in the Seurat object to be determined by the column cell.type
+Idents(untreated_only) <- "cell.type"
+
+#Convert Seurat object to a SingleCellExperiment object
+untreated_only_sling <- as.SingleCellExperiment(untreated_only)
+
+#Run Slingshot
+untreated.sling <- slingshot(untreated_only_sling, cluster = untreated_only$cell.type, reducedDim = "PCA", approx_points = 100, omega = TRUE)
+
+#Embed individual lineage paths involving different clusters into untreated.sling object, so that these paths can later be projected onto the UMAP
+embedded <- embedCurves(untreated.sling, "UMAP")
+
+#View
+embedded@metadata$lineages
+
+#Calculate each pseudo path (i.e. the ordering and involvement of each cellular cluster in each terminal cellular state)
+#This is done by estimating degree of transcriptomic similarities across clusters
+pseudo.paths <- slingPseudotime(untreated.sling)
+head(pseudo.paths, 2)
+
+
+#Estimate average pseudotime to determine overall which cells appear to be most immature, transient states or fully differentiated
+avg_pseudoTime <- rowMeans(pseudo.paths, na.rm = TRUE)
+colData(untreated.sling)$avg_pseudoTime <- avg_pseudoTime
+
+
+#Extract curves
+embedded_curve <- slingCurves(embedded)
+curve <- lapply(embedded_curve, function(x) {
+    dat <- data.frame(x$s[x$ord, ])  # UMAP axis and the order of cells
+    return(dat)
+})
+
+names(curve) <- c("curve1", "curve2", "curve3", "curve4")
+
+
+#Plot each of the estimated lineages (each colored line representing a different path towards a terminal state) and color clusters by their order in pseudotime
+plotUMAP(untreated.sling, colour_by = "avg_pseudoTime") + geom_path(data = curve$curve1,
+    aes(x = UMAP_1, y = UMAP_2), color = "blue") + geom_path(data = curve$curve2, aes(x = UMAP_1,
+    y = UMAP_2), color = "black") + geom_path(data = curve$curve3, aes(x = UMAP_1,
+    y = UMAP_2), color = "red")
+
+
+```
+
+
+
+```{r}
+#Get data from Bach et al. 2017 for Fig 1 and 3
+
+#Data accession number: GSE106273 in GEO database
+#Data sets obtained: NP_1, NP_2, G_1, G_2, L_1, L_2, PI_1, PI_2
+
+#NP = nulliparous
+#G = gestation
+#L = lactation
+#PI = post involution
+
+#Make folders with barcodes, features, and matrices
+
+#Save paths to folders here
+
+
+NP_1_dir <- "/path/to/NP_1"
+NP_2_dir <- "/path/to/NP_2"
+G_1_dir <- "/path/to/G_1"
+G_2_dir <- "/path/to/G_2"
+L_1_dir <- "/path/to/L_1"
+L_2_dir <- "/path/to/L_2"
+PI_1_dir <- "/path/to/PI_1"
+PI_2_dir <- "/path/to/PI_2"
+
+
+#Create Seurat objects
+NP_1 <- Read10X(data.dir = NP_1_dir)
+NP_1 = CreateSeuratObject(counts = NP_1, min.cells = 3, min.features = 200)
+
+NP_2 <- Read10X(data.dir = NP_2_dir)
+NP_2 = CreateSeuratObject(counts = NP_2, min.cells = 3, min.features = 200)
+
+G_1 <- Read10X(data.dir = G_1_dir)
+G_1 = CreateSeuratObject(counts = G_1, min.cells = 3, min.features = 200)
+
+G_2 <- Read10X(data.dir = G_2_dir)
+G_2 = CreateSeuratObject(counts = G_2, min.cells = 3, min.features = 200)
+
+L_1 <- Read10X(data.dir = L_1_dir)
+L_1 = CreateSeuratObject(counts = L_1, min.cells = 3, min.features = 200)
+
+L_2 <- Read10X(data.dir = L_2_dir)
+L_2 = CreateSeuratObject(counts = L_2, min.cells = 3, min.features = 200)
+
+PI_1 <- Read10X(data.dir = PI_1_dir)
+PI_1 = CreateSeuratObject(counts = PI_1, min.cells = 3, min.features = 200)
+
+PI_2 <- Read10X(data.dir = PI_2_dir)
+PI_2 = CreateSeuratObject(counts = PI_2, min.cells = 3, min.features = 200)
+
+
+#Add IDs - Origin
+NP_1@meta.data$Condition <- NA
+NP_1@meta.data[grepl("1",row.names(NP_1@meta.data)),]$Condition <- "NP_1"
+
+NP_2@meta.data$Condition <- NA
+NP_2@meta.data[grepl("1",row.names(NP_2@meta.data)),]$Condition <- "NP_2"
+
+G_1@meta.data$Condition <- NA
+G_1@meta.data[grepl("1",row.names(G_1@meta.data)),]$Condition <- "G_1"
+
+G_2@meta.data$Condition <- NA
+G_2@meta.data[grepl("1",row.names(G_2@meta.data)),]$Condition <- "G_2"
+
+L_1@meta.data$Condition <- NA
+L_1@meta.data[grepl("1",row.names(L_1@meta.data)),]$Condition <- "L_1"
+
+L_2@meta.data$Condition <- NA
+L_2@meta.data[grepl("1",row.names(L_2@meta.data)),]$Condition <- "L_2"
+
+PI_1@meta.data$Condition <- NA
+PI_1@meta.data[grepl("1",row.names(PI_1@meta.data)),]$Condition <- "PI_1"
+
+PI_2@meta.data$Condition <- NA
+PI_2@meta.data[grepl("1",row.names(PI_2@meta.data)),]$Condition <- "PI_2"
+
+
+#Check quality of each object
+NP_1[["percent.mt"]] <- PercentageFeatureSet(NP_1, pattern = "^mt-")
+
+VlnPlot(NP_1, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+NP_2[["percent.mt"]] <- PercentageFeatureSet(NP_2, pattern = "^mt-")
+
+VlnPlot(NP_2, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+G_1[["percent.mt"]] <- PercentageFeatureSet(G_1, pattern = "^mt-")
+
+VlnPlot(G_1, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+G_2[["percent.mt"]] <- PercentageFeatureSet(G_2, pattern = "^mt-")
+
+VlnPlot(G_2, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+L_1[["percent.mt"]] <- PercentageFeatureSet(L_1, pattern = "^mt-")
+
+VlnPlot(L_1, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+
+L_2[["percent.mt"]] <- PercentageFeatureSet(L_2, pattern = "^mt-")
+
+VlnPlot(L_2, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+PI_1[["percent.mt"]] <- PercentageFeatureSet(PI_1, pattern = "^mt-")
+
+VlnPlot(PI_1, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+PI_2[["percent.mt"]] <- PercentageFeatureSet(PI_2, pattern = "^mt-")
+
+
+VlnPlot(PI_2, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+#Mitochondrial content looks good (<10%), but still proceeding with standard filtering:
+
+NP_1 <- subset(NP_1, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+NP_2 <- subset(NP_2, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+G_1 <- subset(G_1, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+G_2 <- subset(G_2, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+L_1 <- subset(L_1, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+L_2 <- subset(L_2, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+PI_1 <- subset(PI_1, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+PI_2 <- subset(PI_2, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+
+table(NP_1@meta.data$orig.ident) #2,084 cells
+table(NP_2@meta.data$orig.ident) #2,051 cells
+table(G_1@meta.data$orig.ident) #2,732 cells
+table(G_2@meta.data$orig.ident) #2,891 cells
+table(L_1@meta.data$orig.ident) #5,903 cells
+table(L_2@meta.data$orig.ident) #3,692 cells
+table(PI_1@meta.data$orig.ident) #1,456 cells
+table(PI_2@meta.data$orig.ident) #4,276 cells
+
+
+```
+
+```{r}
+#For analyses of murine organoids + intact MECs in Fig 1
+
+#Include EC data from Henry et al. 2021
+
+Sam_H_dir <- "/Users/ruiz/Downloads/R_OBJECTS/Sam_H_MECs/"
+
+Intact_MECs_Sam_H <- Read10X(data.dir = Sam_H_dir)
+Intact_MECs_Sam_H = CreateSeuratObject(counts = Intact_MECs_Sam_H, min.cells = 3, min.features = 200)
+
+#Add ID - Origin
+Intact_MECs_Sam_H@meta.data$Condition <- NA
+Intact_MECs_Sam_H@meta.data[grepl("1",row.names(Intact_MECs_Sam_H@meta.data)),]$Condition <- "Intact_MECs_Sam_H"
+
+#Check quality of each object
+Intact_MECs_Sam_H[["percent.mt"]] <- PercentageFeatureSet(Intact_MECs_Sam_H, pattern = "^mt-")
+
+VlnPlot(Intact_MECs_Sam_H, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+#2,135 cells - let's remove 15% mit content
+
+Intact_MECs_Sam_H <- subset(Intact_MECs_Sam_H, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 15 )
+
+#2,119 cells after mitochondrial content filtering
+```
+
+
+```{r}
+#Standard seurat processing
+
+Intact_MECs_Sam_H <- NormalizeData(Intact_MECs_Sam_H)
+
+genes.in.use <- 2000
+
+Intact_MECs_Sam_H <- FindVariableFeatures(Intact_MECs_Sam_H, selection.method = "vst", nfeatures = genes.in.use)
+
+Intact_MECs_Sam_H <- ScaleData(Intact_MECs_Sam_H)
+
+Intact_MECs_Sam_H <- RunPCA(Intact_MECs_Sam_H, features = VariableFeatures(Intact_MECs_Sam_H)) 
+
+DimPlot(Intact_MECs_Sam_H, reduction = "pca", group.by = "Condition")
+
+ElbowPlot(Intact_MECs_Sam_H) 
+
+#Using dims of 10
+
+Intact_MECs_Sam_H <- FindNeighbors(Intact_MECs_Sam_H, dims = 1:10)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+Intact_MECs_Sam_H <- FindClusters(object = Intact_MECs_Sam_H, resolution = resolution.range)
+
+clustree(Intact_MECs_Sam_H) #choosing 0.3 resolution
+
+#Cluster
+Intact_MECs_Sam_H <- FindClusters(object = Intact_MECs_Sam_H, resolution = 0.3)
+
+#Reduce dimensions
+Intact_MECs_Sam_H <- RunUMAP(Intact_MECs_Sam_H, dims = 1:10)
+
+DimPlot(Intact_MECs_Sam_H, reduction = "umap", label = TRUE)
+
+```
+
+```{r}
+
+#Check general clusters to only select epithelial clusters
+
+DotPlot(Intact_MECs_Sam_H,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7"))+RotatedAxis()
+
+#clusters 0,1,2 and 3 are epithelial cells (EC), the rest are not ECs because they lack Epcam + cytokeratin expression
+
+Intact_MECs_Sam_H_rEC <- subset(x = Intact_MECs_Sam_H, idents = c("0", "1", "2", "3")) #1,993
+
+```
+
+```{r}
+
+#Re-cluster
+Intact_MECs_Sam_H_rEC <- NormalizeData(Intact_MECs_Sam_H_rEC )
+
+genes.in.use <- 2000
+
+Intact_MECs_Sam_H_rEC <- FindVariableFeatures(Intact_MECs_Sam_H_rEC, selection.method = "vst", nfeatures = genes.in.use)
+
+Intact_MECs_Sam_H_rEC <- ScaleData(Intact_MECs_Sam_H_rEC)
+
+Intact_MECs_Sam_H_rEC <- RunPCA(Intact_MECs_Sam_H_rEC, features = VariableFeatures(Intact_MECs_Sam_H_rEC)) 
+
+DimPlot(Intact_MECs_Sam_H_rEC, reduction = "pca", group.by = "Condition")
+
+ElbowPlot(Intact_MECs_Sam_H_rEC) 
+
+#Using dims of 10
+
+Intact_MECs_Sam_H_rEC <- FindNeighbors(Intact_MECs_Sam_H_rEC, dims = 1:10)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+Intact_MECs_Sam_H_rEC <- FindClusters(object = Intact_MECs_Sam_H_rEC, resolution = resolution.range)
+
+clustree(Intact_MECs_Sam_H_rEC) #Choosing 0.3 resolution
+
+#Cluster
+Intact_MECs_Sam_H_rEC <- FindClusters(object = Intact_MECs_Sam_H_rEC, resolution = 0.3)
+
+#Reduce dimensions
+Intact_MECs_Sam_H_rEC <- RunUMAP(Intact_MECs_Sam_H_rEC, dims = 1:10)
+
+DimPlot(Intact_MECs_Sam_H_rEC, reduction = "umap", label = TRUE)
+
+DotPlot(Intact_MECs_Sam_H_rEC,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7"))+RotatedAxis()
+
+#Confirmed - only ECs
+
+```
+
+
+```{r}
+#Data integration
+
+#List of objects to integrate
+reference.list <- list(untreated_only, NP_1, NP_2, Intact_MECs_Sam_H_rEC)
+
+
+
+# Run Normal PreProcessing on each object in list
+for (i in 1:length(reference.list)) {
+    reference.list[[i]] <-
+        NormalizeData(reference.list[[i]], verbose = FALSE)
+    reference.list[[i]] <-
+        FindVariableFeatures(
+            reference.list[[i]],
+            selection.method = "vst",
+            nfeatures = 2000,
+            verbose = FALSE
+        )
+}
+
+gc()
+
+#Integrate
+orgs_intact_bach.anchors <- FindIntegrationAnchors(object.list = reference.list , dims = 1:30)
+
+orgs_intact_bach.integrated <- IntegrateData(anchorset = orgs_intact_bach.anchors, dims = 1:30)
+
+DefaultAssay(orgs_intact_bach.integrated) <- "integrated"
+
+```
+
+```{r}
+#Standard processing
+genes.in.use <- 2000
+
+orgs_intact_bach.integrated <- FindVariableFeatures(orgs_intact_bach.integrated, selection.method = "vst", nfeatures = genes.in.use)
+
+orgs_intact_bach.integrated <- ScaleData(orgs_intact_bach.integrated)
+
+orgs_intact_bach.integrated <- RunPCA(orgs_intact_bach.integrated, features = VariableFeatures(orgs_intact_bach.integrated)) 
+
+DimPlot(orgs_intact_bach.integrated, reduction = "pca", group.by = "Condition")
+
+ElbowPlot(orgs_intact_bach.integrated)
+
+#Using dims of 15
+
+orgs_intact_bach.integrated <- FindNeighbors(orgs_intact_bach.integrated, dims = 1:15)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+#Find clusters using a range of resolutions
+orgs_intact_bach.integrated <- FindClusters(object = orgs_intact_bach.integrated, resolution = resolution.range)
+
+clustree(orgs_intact_bach.integrated) #Choosing 0.3 resolution
+
+```
+
+
+```{r}
+
+#Clustering
+orgs_intact_bach.integrated <- FindClusters(object = orgs_intact_bach.integrated, resolution = 0.3)
+
+#Reduce dimensions
+orgs_intact_bach.integrated <- RunUMAP(orgs_intact_bach.integrated, dims = 1:15)
+
+#Rename clusters starting from 1 instead of 0
+
+orgs_intact_bach.integrated <- RenameIdents(orgs_intact_bach.integrated, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6",`6` = "7")
+
+#UMAP plot
+DimPlot(orgs_intact_bach.integrated, reduction = "umap", label = TRUE) 
+
+
+#Add column to organize conditions (intact MECs and organoids)
+orgs_intact_bach.integrated@meta.data$Summary<- NA
+
+# Adding column based on other column:
+orgs_intact_bach.integrated@meta.data <- orgs_intact_bach.integrated@meta.data %>%
+  mutate(Summary = case_when(
+    endsWith(Condition, "Female Untreated") ~ "1. Mouse organoids without hormones",
+    endsWith(orig.ident, "SeuratProject") ~ "2. Murine intact nulliparous MECs"
+    ))
+
+
+#Show UMAP split by sample origin
+DimPlot(orgs_intact_bach.integrated, reduction = "umap", label = TRUE, split.by = "Summary") 
+
+#Number of cells:
+
+#10,508 cells for MEC organoids
+#6,128 cells for intact MECs
+
+```
+
+```{r}
+
+#Remove low Epcam clusters and re-cluster
+DefaultAssay(orgs_intact_bach.integrated) <- "RNA"
+DotPlot(orgs_intact_bach.integrated,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7", "Oxtr", "Csn2", "Csn3", "Prlr", "Pgr", "Esr1"))+RotatedAxis() 
+
+DefaultAssay(orgs_intact_bach.integrated) <- "integrated"
+
+#Eliminate cluster 4 and 5
+
+orgs_intact_bach_EC <- subset(x = orgs_intact_bach.integrated, idents = c("0", "1", "2", "3"))
+
+
+```
+
+```{r}
+#Re-cluster epithelial cells
+
+DefaultAssay(orgs_intact_bach_EC) <- "RNA"
+
+orgs_intact_bach_rEC <- NormalizeData(orgs_intact_bach_EC)
+
+DefaultAssay(orgs_intact_bach_rEC) <- "integrated"
+
+genes.in.use <- 2000
+
+orgs_intact_bach_rEC <- FindVariableFeatures(orgs_intact_bach_rEC, selection.method = "vst", nfeatures = genes.in.use)
+
+orgs_intact_bach_rEC <- ScaleData(orgs_intact_bach_rEC)
+
+orgs_intact_bach_rEC <- RunPCA(orgs_intact_bach_rEC, features = VariableFeatures(orgs_intact_bach_rEC)) 
+
+DimPlot(orgs_intact_bach_rEC, reduction = "pca", group.by = "Condition")
+
+ElbowPlot(orgs_intact_bach_rEC) #use dims of 15
+
+
+#Number of cells for paper:
+table(orgs_intact_bach_rEC@meta.data$Summary)
+
+#Untreated organoids - 10,502
+#Nulli - 6,011
+
+orgs_intact_bach_rEC <- FindNeighbors(orgs_intact_bach_rEC, dims = 1:15)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+orgs_intact_bach_rEC <- FindClusters(object = orgs_intact_bach_rEC, resolution = resolution.range)
+
+clustree(orgs_intact_bach_rEC) #Choosing 0.3 resolution 
+
+
+```
+
+```{r}
+
+#Cluster
+orgs_intact_bach_rEC <- FindClusters(object = orgs_intact_bach_rEC, resolution = 0.3)
+
+#Reduce dimensions
+orgs_intact_bach_rEC <- RunUMAP(orgs_intact_bach_rEC, dims = 1:15)
+
+#Rename clusters starting from 1 instead of 0
+
+orgs_intact_bach_rEC$seurat_clusters <- as.factor(as.numeric(as.character(orgs_intact_bach_rEC$seurat_clusters)) + 1)
+
+orgs_intact_bach_rEC <- RenameIdents(orgs_intact_bach_rEC, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6",`6` = "7")
+
+#Show UMAP
+DimPlot(orgs_intact_bach_rEC, reduction = "umap", label = TRUE) 
+
+#Split by sample origin
+DimPlot(orgs_intact_bach_rEC, reduction = "umap", label = TRUE, split.by = "Summary") 
+```
+
+```{r}
+
+#Add column to distinguish replicates from each other
+orgs_intact_bach_rEC@meta.data$Replicate <- NA
+orgs_intact_bach_rEC@meta.data[grepl("2",row.names(orgs_intact_bach_rEC@meta.data)),]$Replicate <- "NP_1"
+orgs_intact_bach_rEC@meta.data[grepl("3",row.names(orgs_intact_bach_rEC@meta.data)),]$Replicate <- "NP_2"
+
+orgs_intact_bach_rEC@meta.data <- orgs_intact_bach_rEC@meta.data %>%
+  mutate(Replicate = case_when(
+    endsWith(Condition, "Female Untreated") ~ "Org_1",
+    endsWith(Condition, "Intact_MECs_Sam_H") ~ "NP_3"
+    ))
+```
+
+
+
+```{r}
+
+#Save object before continuing:
+
+saveRDS(orgs_intact_bach_rEC, file = "path/to/orgs_intact_MECs_rEC.rds")
+
+orgs_intact_bach_rEC <- readRDS(file = "path/to/orgs_intact_MECs_rEC.rds")
+
+
+```
+
+```{r}
+
+#Plot gene markers
+
+#Basic markers first:
+DefaultAssay(orgs_intact_bach_rEC) <- "RNA"
+
+DotPlot(orgs_intact_bach_rEC,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7", "Oxtr", "Csn2", "Csn3", "Lalba", "Aldh1a3", "Prlr", "Pgr", "Esr1", "Tagln"), col.min = 0)+RotatedAxis() 
+
+#Henry et al. markers:
+DotPlot(orgs_intact_bach_rEC,features = m_myo_prog)+RotatedAxis() 
+DotPlot(orgs_intact_bach_rEC,features = m_luminal_hormone_neg_prog)+RotatedAxis() 
+DotPlot(orgs_intact_bach_rEC,features = m_luminal_ductal_diff_fxyd2 )+RotatedAxis()
+DotPlot(orgs_intact_bach_rEC,features = m_luminal_alveolar_prog_lalba )+RotatedAxis() 
+DotPlot(orgs_intact_bach_rEC,features = m_luminal_alveolar_aldh1a3)+RotatedAxis()  
+DotPlot(orgs_intact_bach_rEC,features = m_luminal_ductal_diff_rcan1)+RotatedAxis() 
+DotPlot(orgs_intact_bach_rEC,features = m_common_luminal_prog_tet2)+RotatedAxis() 
+DotPlot(orgs_intact_bach_rEC,features = m_myo_diff)+RotatedAxis() 
+DotPlot(orgs_intact_bach_rEC,features = m_bipotential_prog)+RotatedAxis() 
+DotPlot(orgs_intact_bach_rEC,features = m_proliferating_lum_alveolar)+RotatedAxis() 
+DotPlot(orgs_intact_bach_rEC,features = EC_genes)+RotatedAxis() 
+
+```
+
+```{r}
+
+#Rename clusters for paper
+
+#With classifications 
+orgs_intact_bach_rEC_names <- RenameIdents(orgs_intact_bach_rEC, `1` = "OIM1. LHS1", `2` = "OIM2. LASP1", `3` = "OIM3. LASP2",`4` = "OIM4. BMyo1",`5` = "OIM5. LASP3 (Proliferating)",`6` = "OIM6. LASP4")
+
+
+DimPlot(orgs_intact_bach_rEC_names, reduction = "umap", label = FALSE) 
+
+
+#With correct numbering 
+
+orgs_intact_bach_rEC_numbers <- RenameIdents(orgs_intact_bach_rEC, `1` = "OIM1", `2` = "OIM2", `3` = "OIM3",`4` = "OIM4",`5` = "OIM5",`6` = "OIM6")
+
+DimPlot(orgs_intact_bach_rEC_numbers, reduction = "umap", label = TRUE) 
+
+DimPlot(orgs_intact_bach_rEC_numbers, reduction = "umap", label = TRUE, split.by = "Summary") 
+
+```
+
+
+```{r}
+
+#Build dendrogram 
+
+orgs_intact_bach_rEC_numbers <- BuildClusterTree(orgs_intact_bach_rEC_numbers,dims=1:10)
+
+plot(orgs_intact_bach_rEC_numbers@tools$BuildClusterTree)
+
+#Re-organize from bottom up, based on dendrogram 
+levels(orgs_intact_bach_rEC_numbers) <- c("OIM4", "OIM5", "OIM2", "OIM3", "OIM1", "OIM6")
+
+DefaultAssay(orgs_intact_bach_rEC_numbers) <- "RNA"
+
+
+DotPlot(orgs_intact_bach_rEC_numbers,features = EC_genes)+RotatedAxis()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))
+
+```
+
+```{r}
+#Plot percentage of cells per cluster 
+orgs_intact_bach_rEC@meta.data %>%
+  group_by(seurat_clusters, Summary) %>%
+  count() %>%
+  group_by(Summary) %>%
+  mutate(percent=100*n/sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=seurat_clusters,y=percent, fill= Summary)) +
+  geom_col() +
+  ggtitle("Percentage of Cells in Each Clusters per Sample")+
+  theme_classic()
+
+```
+
+
+```{r}
+
+#Ternary plot analysis of cells in OIM6 
+
+#Generate Scores and Add to Metadata of object
+orgs_intact_bach_rEC <- AddModuleScore_UCell(orgs_intact_bach_rEC,features = list(m_myo_prog_diff), name = "BMyo")
+orgs_intact_bach_rEC <- AddModuleScore_UCell(orgs_intact_bach_rEC,features = list(m_luminal_ductal_diff), name = "LHS")
+orgs_intact_bach_rEC <- AddModuleScore_UCell(orgs_intact_bach_rEC,features = list(m_luminal_alveolar), name = "LASP")
+                                                                                   
+
+#Pull metadata column scores and generate lists with these values
+BMyo_Score <- orgs_intact_bach_rEC$signature_1BMyo
+LHS_Score <- orgs_intact_bach_rEC$signature_1LHS
+LASP_Score <- orgs_intact_bach_rEC$signature_1LASP
+
+#Generate a data frame with these lists
+scores_Df <- data.frame(BMyo_Score, LHS_Score, LASP_Score)
+
+scores_Df = scores_Df + 0.01
+
+my_cols <- c("1" = "#F8766D", "2" = "#ABA300", "3" = "#0CB702", "4" = "#00C19A", "5" = "#8494FF", "6" = "#FF61CC") 
+
+ternaryplot(scores_Df, scale = 1, col = my_cols[orgs_intact_bach_rEC$seurat_clusters], main = "Organoid MECs Lineage Identities",dimnames = c("BMyo", "LHS", "LASP") )
+
+
+#Individual ternary plot for OIM6
+prog_clusters_no_treatment <- subset(x = orgs_intact_bach_rEC, idents = "6") 
+
+prog_BMyo_Score <- prog_clusters_no_treatment$signature_1myo
+prog_LHS_Score <- prog_clusters_no_treatment$signature_1LHS
+prog_alv_Score <- prog_clusters_no_treatment$signature_1LASP
+
+prog_scores_Df <- data.frame(prog_BMyo_Score, prog_LHS_Score, prog_alv_Score)
+prog_scores_Df = prog_scores_Df + 0.01
+
+
+ternaryplot(prog_scores_Df, scale = 100, col = my_cols[prog_clusters_no_treatment$seurat_clusters], dimnames = c("BMyo", "LHS", "LASP"), main = "OIM6 Cells Lineage Identity", pch = 20)
+
+```
+
+```{r}
+
+#GSEA terms enriched in OIM6 
+orgs_intact_bach_rEC.markers <- FindAllMarkers(orgs_intact_bach_rEC, only.pos = TRUE)
+orgs_intact_bach_rEC.markers_c6 <- orgs_intact_bach_rEC.markers[orgs_intact_bach_rEC.markers$cluster == 6,]
+
+#Save markers for OIM6 so we can view them for analysis
+write.csv(orgs_intact_bach_rEC.markers_c6, file = '/path/to/orgs_intact_bach_rEC.markers_c6.csv')
+
+cluster_6 <- to.gsea(orgs_intact_bach_rEC.markers_c6)
+
+write.table(cluster_6, '/path/to/orgs_intact_bach_rEC_c6markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+plot_cluster <- read.csv("/path/to/GSEA_runs_organoid_paper/tresh_10_cluster_6_organoid_exclusive_hallmark.GseaPreranked.1665364635342/summary_plot.csv")
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+ggplot(plot_cluster_filt, aes(x = NES, y = reorder(NAME, -log(LOG_ADJ_P)), col = FDR.q.val, size = -log(LOG_ADJ_P))) + geom_point() + xlim(-3,3) + geom_vline(xintercept = 0) + theme(axis.text = element_text(size = 10)) + ggtitle("Cluster OIM6") +
+ xlab("Hallmark terms enriched in cluster OIM6 vs all clusters") + ylab("Hallmark terms")+theme_bw() 
+
+```
+
+
+Next we analyzed our organoids without treatment + organoids with Estrogen supplementation (Fig 2).
+
+```{r}
+
+#Subset conditions into new object
+untreated_estrogen <- subset(SL02_Sobg_female, subset = Condition == "Female Estrogen Low" | Condition == "Female Untreated" | Condition == "Female Estrogen High" )
+
+table(untreated_estrogen@meta.data$Condition)
+
+#11,599 estrogen high cells
+#9,695 estrogen low cells
+#10,508 untreated cells
+
+
+```
+
+```{r}
+
+#Standard processing
+untreated_estrogen <- NormalizeData(untreated_estrogen)
+
+untreated_estrogen <- FindVariableFeatures(untreated_estrogen, selection.method = "vst", nfeatures = 2000)
+
+untreated_estrogen <- ScaleData(untreated_estrogen)
+
+untreated_estrogen <- RunPCA(untreated_estrogen, features = VariableFeatures(untreated_estrogen)) 
+
+DimPlot(untreated_estrogen, reduction = "pca", group.by = "Condition")
+
+
+ElbowPlot(untreated_estrogen) #Use 10 dimensions
+
+
+```
+
+
+```{r}
+
+untreated_estrogen <- FindNeighbors(untreated_estrogen, dims = 1:10)
+
+#Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+#Find clusters using a range of resolutions
+untreated_estrogen <- FindClusters(object = untreated_estrogen, resolution = resolution.range)
+
+clustree(untreated_estrogen) #Choosing 0.3 resolution 
+
+
+```
+
+```{r}
+#Cluster
+untreated_estrogen <- FindClusters(object = untreated_estrogen, resolution = 0.3)
+
+#Reduce dimensions
+untreated_estrogen <- RunUMAP(untreated_estrogen, dims = 1:15)
+
+#Rename clusters starting from 1 instead of 0
+untreated_estrogen$seurat_clusters <- as.factor(as.numeric(as.character(untreated_estrogen$seurat_clusters)) + 1)
+
+untreated_estrogen <- RenameIdents(untreated_estrogen, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6",`6` = "7",`7` = "8",`8` = "9")
+
+
+DimPlot(untreated_estrogen, reduction = "umap", label = TRUE)  #UMAP plot
+
+
+#Add column to organize conditions
+untreated_estrogen@meta.data$Origin<- NA
+
+#Adding column based on other column:
+untreated_estrogen@meta.data <- untreated_estrogen@meta.data %>%
+  mutate(Origin = case_when(
+    endsWith(Condition, "Female Untreated") ~ "1. Untreated",
+    endsWith(Condition, "Female Estrogen Low") ~ "2. Low Estrogen",
+    endsWith(Condition, "Female Estrogen High") ~ "3. High Estrogen"
+    ))
+
+#Split plot by organized conditions
+DimPlot(untreated_estrogen, reduction = "umap", label = TRUE, split.by = "Origin") 
+
+
+```
+
+
+```{r}
+
+#Cell cycle scoring
+
+untreated_estrogen <- CellCycleScoring(untreated_estrogen, s.features = s.genes, g2m.features = g2m.genes)
+
+DimPlot(untreated_estrogen, reduction = "umap", split.by = "Phase")
+
+
+```
+
+
+```{r}
+
+#Top differentially expressed genes (DEGs) per cluster
+untreated_estrogen.markers <- FindAllMarkers(untreated_estrogen, only.pos = TRUE)
+
+untreated_estrogen.top10 <- untreated_estrogen.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = avg_log2FC)
+DoHeatmap(untreated_estrogen, features = untreated_estrogen.top10$gene)
+
+
+```
+
+```{r}
+
+#Now let's plot each of the markers
+
+#Basic markers first:
+
+DotPlot(untreated_estrogen,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7", "Oxtr", "Csn2", "Csn3", "Prlr", "Pgr", "Esr1", "Tagln", "Lalba"))+RotatedAxis() 
+
+#Henry et al. markers:
+DotPlot(untreated_estrogen,features = m_myo_prog)+RotatedAxis() 
+DotPlot(untreated_estrogen,features = m_luminal_hormone_neg_prog)+RotatedAxis() 
+DotPlot(untreated_estrogen,features = m_luminal_ductal_diff_fxyd2 )+RotatedAxis() 
+DotPlot(untreated_estrogen,features = m_luminal_alveolar_prog_lalba )+RotatedAxis() 
+DotPlot(untreated_estrogen,features = m_luminal_alveolar_aldh1a3)+RotatedAxis()  
+DotPlot(untreated_estrogen,features = m_luminal_ductal_diff_rcan1)+RotatedAxis() 
+DotPlot(untreated_estrogen,features = m_common_luminal_prog_tet2)+RotatedAxis() 
+DotPlot(untreated_estrogen,features = m_myo_diff)+RotatedAxis() 
+DotPlot(untreated_estrogen,features = m_bipotential_prog)+RotatedAxis() 
+DotPlot(untreated_estrogen,features = m_proliferating_lum_alveolar)+RotatedAxis() 
+DotPlot(untreated_estrogen,features = EC_genes)+RotatedAxis() 
+
+
+```
+
+```{r}
+
+#Rename clusters 
+
+#with classifications 
+untreated_estrogen_names <- RenameIdents(untreated_estrogen, `1` = "OE1. LASP1", `2` = "OE2. LASP2", `3` = "OE3. LASP3",`4` = "OE4. BMyo1",`5` = "OE5. LASP4 (Proliferating)",`6` = "OE6. LHS1",`7` = "OE7. BL",`8` = "OE8. LASP5",`9` = "OE9. LHS2 (Proliferating)")
+
+DimPlot(untreated_estrogen_names, reduction = "umap", label = FALSE) 
+
+#with numbering
+untreated_estrogen_numbers <- RenameIdents(untreated_estrogen, `1` = "OE1", `2` = "OE2", `3` = "OE3",`4` = "OE4",`5` = "OE5",`6` = "OE6",`7` = "OE7",`8` = "OE8",`9` = "OE9")
+
+DimPlot(untreated_estrogen_numbers, reduction = "umap", label = TRUE) 
+
+DimPlot(untreated_estrogen_numbers, reduction = "umap", label = TRUE, split.by = "Origin") 
+
+```
+
+
+```{r}
+
+#Build dendrogram to re-order clusters based on their relationship 
+untreated_estrogen_numbers <- BuildClusterTree(untreated_estrogen_numbers,dims=1:10)
+
+plot(untreated_estrogen_numbers@tools$BuildClusterTree)
+
+
+```
+
+```{r}
+
+# Re-organize from bottom up, based on dendrogram 
+levels(untreated_estrogen_numbers) <- c("OE5", "OE9", "OE4", "OE7", "OE8" , "OE1", "OE2", "OE3", "OE6")
+
+
+```
+
+```{r}
+
+#Plot EC genes for paper with re-organized clusters 
+DotPlot(untreated_estrogen_numbers,features = EC_genes)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))
+
+```
+
+```{r}
+#Plot percentage of cells per cluster
+untreated_estrogen@meta.data %>%
+  group_by(seurat_clusters, Origin) %>%
+  count() %>%
+  group_by(Origin) %>%
+  mutate(percent=100*n/sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=seurat_clusters,y=percent, fill= Origin)) +
+  geom_col() +
+  ggtitle("Percentage of Cells in Each Clusters per Sample")+
+  theme_classic()
+```
+
+```{r}
+
+#Save object before continuing:
+saveRDS(untreated_estrogen, file = "path/to/untreated_estrogen.rds")
+
+untreated_estrogen <- readRDS(file = "patho/to/untreated_estrogen.rds")
+```
+
+```{r}
+
+#GSEA analyses for Estrogen effects on organoid MECs
+
+untreated_estrogen.markers_c1 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 1,]
+cluster_1 <- to.gsea(untreated_estrogen.markers_c1)
+write.table(cluster_1, '/path/to/estrogen_c1_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_estrogen.markers_c2 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 2,]
+cluster_2 <- to.gsea(untreated_estrogen.markers_c2)
+write.table(cluster_2, '/path/to/estrogen_c2_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+untreated_estrogen.markers_c3 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 3,]
+cluster_3 <- to.gsea(untreated_estrogen.markers_c3)
+write.table(cluster_3, '/path/to/estrogen_c3_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_estrogen.markers_c4 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 4,]
+cluster_4 <- to.gsea(untreated_estrogen.markers_c4)
+write.table(cluster_4, '/path/to/estrogen_c4_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_estrogen.markers_c5 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 5,]
+cluster_5 <- to.gsea(untreated_estrogen.markers_c5)
+write.table(cluster_5, '/path/to/estrogen_c5_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_estrogen.markers_c6 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 6,]
+cluster_6 <- to.gsea(untreated_estrogen.markers_c6)
+write.table(cluster_6, '/path/to/estrogen_c6_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_estrogen.markers_c7 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 7,]
+cluster_7 <- to.gsea(untreated_estrogen.markers_c7)
+write.table(cluster_7, '/path/to/estrogen_c7_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_estrogen.markers_c8 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 8,]
+cluster_8 <- to.gsea(untreated_estrogen.markers_c8)
+write.table(cluster_8, '/path/to/estrogen_c8_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_estrogen.markers_c9 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 9,]
+cluster_9 <- to.gsea(untreated_estrogen.markers_c9)
+write.table(cluster_9, '/path/to/estrogen_c9_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+plot_cluster <- read.csv("/path/to/estrogen_GSEA/summary_plot.csv")
+
+#keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+  
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("Summary of enriched processes in each OE cluster") + xlab("Cluster") + ylab("Hallmark terms") + theme_bw() + scale_x_continuous(breaks = seq(1, 9, by = 1))
+
+```
+
+```{r}
+
+#GSEA - Directly comparing conditions
+
+cluster_1 <- subset(x = untreated_estrogen, idents = "1")
+cluster_2 <- subset(x = untreated_estrogen, idents = "2")
+cluster_3 <- subset(x = untreated_estrogen, idents = "3")
+cluster_4 <- subset(x = untreated_estrogen, idents = "4")
+cluster_5 <- subset(x = untreated_estrogen, idents = "5")
+cluster_6 <- subset(x = untreated_estrogen, idents = "6")
+cluster_7 <- subset(x = untreated_estrogen, idents = "7")
+cluster_8 <- subset(x = untreated_estrogen, idents = "8")
+cluster_9 <- subset(x = untreated_estrogen, idents = "9")
+
+Idents(cluster_1) <- "Origin"
+Idents(cluster_2) <- "Origin"
+Idents(cluster_3) <- "Origin"
+Idents(cluster_4) <- "Origin"
+Idents(cluster_5) <- "Origin"
+Idents(cluster_6) <- "Origin"
+Idents(cluster_7) <- "Origin"
+Idents(cluster_8) <- "Origin"
+Idents(cluster_9) <- "Origin"
+
+```
+
+
+```{r}
+
+#Low estrogen vs untreated
+
+#Use untreated as control so that's ident.2
+cluster_1 <- FindMarkers(cluster_1, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_1_gsea <- to.gsea.2.way(cluster_1)
+write.table(cluster_1_gsea, '/path/to/low_v_untreated_c1.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_2 <- FindMarkers(cluster_2, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_2_gsea <- to.gsea.2.way(cluster_2)
+write.table(cluster_2_gsea, '/path/to/low_v_untreated_c2.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_3 <- FindMarkers(cluster_3, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_3_gsea <- to.gsea.2.way(cluster_3)
+write.table(cluster_3_gsea, '/path/to/low_v_untreated_c3.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_4 <- FindMarkers(cluster_4, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_4_gsea <- to.gsea.2.way(cluster_4)
+write.table(cluster_4_gsea, '/path/to/low_v_untreated_c4.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_5 <- FindMarkers(cluster_5, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_5_gsea <- to.gsea.2.way(cluster_5)
+write.table(cluster_5_gsea, '/path/to/low_v_untreated_c5.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_6 <- FindMarkers(cluster_6, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_6_gsea <- to.gsea.2.way(cluster_6)
+write.table(cluster_6_gsea, '/path/to/low_v_untreated_c6.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_7 <- FindMarkers(cluster_7, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_7_gsea <- to.gsea.2.way(cluster_7)
+write.table(cluster_7_gsea, '/path/to/low_v_untreated_c7.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_8 <- FindMarkers(cluster_8, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_8_gsea <- to.gsea.2.way(cluster_8)
+write.table(cluster_8_gsea, '/path/to/low_v_untreated_c8.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_9 <- FindMarkers(cluster_9, only.pos = TRUE, ident.1 = "2. Low Estrogen", ident.2 = "1. Untreated")
+cluster_9_gsea <- to.gsea.2.way(cluster_9)
+write.table(cluster_9_gsea, '/path/to/low_v_untreated_c9.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+plot_cluster <- read.csv("/path/to/low_vs_untreated_GSEA/summary_plot.csv")
+
+#keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+  
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("Summary of enriched processes in low Estrogen vs no treatment") + xlab("Cluster") + ylab("Hallmark terms")+ theme_bw() + scale_x_continuous(breaks = seq(1, 9, by = 1))
+
+
+```
+
+
+```{r}
+
+#High estrogen vs no treatment
+
+#Use untreated as control so that's ident.2
+cluster_1 <- FindMarkers(cluster_1, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_1_gsea <- to.gsea.2.way(cluster_1)
+write.table(cluster_1_gsea, '/path/to/high_v_untreated_c1.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_2 <- FindMarkers(cluster_2, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_2_gsea <- to.gsea.2.way(cluster_2)
+write.table(cluster_2_gsea, '/path/to/high_v_untreated_c2.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_3 <- FindMarkers(cluster_3, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_3_gsea <- to.gsea.2.way(cluster_3)
+write.table(cluster_3_gsea, '/path/to/high_v_untreated_c3.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_4 <- FindMarkers(cluster_4, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_4_gsea <- to.gsea.2.way(cluster_4)
+write.table(cluster_4_gsea, '/path/to/high_v_untreated_c4.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_5 <- FindMarkers(cluster_5, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_5_gsea <- to.gsea.2.way(cluster_5)
+write.table(cluster_5_gsea, '/path/to/high_v_untreated_c5.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_6 <- FindMarkers(cluster_6, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_6_gsea <- to.gsea.2.way(cluster_6)
+write.table(cluster_6_gsea, '/path/to/high_v_untreated_c6.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_7 <- FindMarkers(cluster_7, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_7_gsea <- to.gsea.2.way(cluster_7)
+write.table(cluster_7_gsea, '/path/to/high_v_untreated_c7.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_8 <- FindMarkers(cluster_8, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_8_gsea <- to.gsea.2.way(cluster_8)
+write.table(cluster_8_gsea, '/path/to/high_v_untreated_c8.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_9 <- FindMarkers(cluster_9, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "1. Untreated")
+cluster_9_gsea <- to.gsea.2.way(cluster_9)
+write.table(cluster_9_gsea, '/path/to/high_v_untreated_c9.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+plot_cluster <- read.csv("/path/to/high_vs_untreated_GSEA/summary_plot.csv")
+
+#keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+  
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("Summary of enriched processes in high Estrogen vs no treatment") + xlab("Cluster") + ylab("Hallmark terms")+ theme_bw() + scale_x_continuous(breaks = seq(1, 9, by = 1)) + expand_limits(x = 1)
+
+
+```
+
+
+```{r}
+
+#High vs low treatment
+
+#Use low estrogen as control so that's ident.2
+cluster_1 <- FindMarkers(cluster_1, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_1_gsea <- to.gsea.2.way(cluster_1)
+write.table(cluster_1_gsea, '/path/to/high_v_low_c1.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_2 <- FindMarkers(cluster_2, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_2_gsea <- to.gsea.2.way(cluster_2)
+write.table(cluster_2_gsea, '/path/to/high_v_low_c2.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_3 <- FindMarkers(cluster_3, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_3_gsea <- to.gsea.2.way(cluster_3)
+write.table(cluster_3_gsea, '/path/to/high_v_low_c3.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_4 <- FindMarkers(cluster_4, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_4_gsea <- to.gsea.2.way(cluster_4)
+write.table(cluster_4_gsea, '/path/to/high_v_low_c4.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_5 <- FindMarkers(cluster_5, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_5_gsea <- to.gsea.2.way(cluster_5)
+write.table(cluster_5_gsea, '/path/to/high_v_low_c5.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_6 <- FindMarkers(cluster_6, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_6_gsea <- to.gsea.2.way(cluster_6)
+write.table(cluster_6_gsea, '/path/to/high_v_low_c6.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_7 <- FindMarkers(cluster_7, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_7_gsea <- to.gsea.2.way(cluster_7)
+write.table(cluster_7_gsea, '/path/to/high_v_low_c7.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_8 <- FindMarkers(cluster_8, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_8_gsea <- to.gsea.2.way(cluster_8)
+write.table(cluster_8_gsea, '/path/to/high_v_low_c8.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_9 <- FindMarkers(cluster_9, only.pos = TRUE, ident.1 = "3. High Estrogen", ident.2 = "2. Low Estrogen")
+cluster_9_gsea <- to.gsea.2.way(cluster_9)
+write.table(cluster_9_gsea, '/path/to/high_v_low_c9.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+plot_cluster <- read.csv("/path/to/high_vs_low_GSEA/summary_plot.csv")
+
+#keep p values behigh 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+  
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("Summary of enriched processes in high Estrogen vs low Estrogen") + xlab("Cluster") + ylab("Hallmark terms")+ theme_bw() + scale_x_continuous(breaks = seq(1, 9, by = 1))
+```
+
+```{r}
+
+#Untreated vs pregnancy hormone supplementation (estrogen, progesterone, prolactin - EPP) analysis 
+
+#Subset conditions into new object
+untreated_EPP <- subset(SL02_Sobg_female, subset = Condition == "Female Untreated" | Condition == "Female EPP")
+
+table(untreated_EPP@meta.data$Condition)
+
+#16,463 EPP cells
+#10,508 untreated cells
+
+
+#Process data
+
+#Normalize
+untreated_EPP <- NormalizeData(untreated_EPP)
+
+untreated_EPP <- FindVariableFeatures(untreated_EPP, selection.method = "vst", nfeatures = 2000)
+
+untreated_EPP <- ScaleData(untreated_EPP)
+
+untreated_EPP <- RunPCA(untreated_EPP, features = VariableFeatures(untreated_EPP)) 
+
+DimPlot(untreated_EPP, reduction = "pca", group.by = "Condition")
+
+
+ElbowPlot(untreated_EPP)
+
+```
+
+```{r}
+
+# Therefore using dims of 10
+
+untreated_EPP <- FindNeighbors(untreated_EPP, dims = 1:10)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+untreated_EPP <- FindClusters(object = untreated_EPP, resolution = resolution.range)
+
+clustree(untreated_EPP) #Testing 0.3 resolution or less based on clustree
+
+```
+
+
+```{r}
+
+#Cluster
+untreated_EPP <- FindClusters(object = untreated_EPP, resolution = 0.3)
+
+#Reduce dimensions
+untreated_EPP <- RunUMAP(untreated_EPP, dims = 1:10)
+
+#Rename clusters starting from 1 instead of 0
+untreated_EPP$seurat_clusters <- as.factor(as.numeric(as.character(untreated_EPP$seurat_clusters)) + 1)
+untreated_EPP <- RenameIdents(untreated_EPP, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6",`6` = "7",`7` = "8",`8` = "9", `9`="10")
+
+
+#Plot UMAP
+DimPlot(untreated_EPP, reduction = "umap", label = TRUE) 
+
+#Add column to organize conditions
+untreated_EPP@meta.data$Origin<- NA
+
+# Adding column based on other column:
+untreated_EPP@meta.data <- untreated_EPP@meta.data %>%
+  mutate(Origin = case_when(
+    endsWith(Condition, "Female Untreated") ~ "1. Untreated",
+    endsWith(Condition, "Female EPP") ~ "2. EPP"
+    ))
+
+#Split plot by organized conditions
+DimPlot(untreated_EPP, reduction = "umap", label = TRUE, split.by = "Origin") 
+
+```
+
+```{r}
+
+#Cell cycle scoring
+
+untreated_EPP <- CellCycleScoring(untreated_EPP, s.features = s.genes, g2m.features = g2m.genes)
+
+DimPlot(untreated_EPP, reduction = "umap", split.by = "Phase")
+
+
+```
+
+
+```{r}
+
+#Top differentially expressed genes (DEGs) per cluster
+untreated_EPP.markers <- FindAllMarkers(untreated_EPP, only.pos = TRUE)
+
+untreated_EPP.top10 <- untreated_EPP.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = avg_log2FC)
+DoHeatmap(untreated_EPP, features = untreated_EPP.top10$gene)
+
+
+```
+
+```{r}
+
+#Plot markers
+
+#Basic markers first:
+
+DotPlot(untreated_EPP,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7", "Oxtr", "Csn2", "Csn3", "Lalba", "Aldh1a3", "Prlr", "Pgr", "Esr1", "Tagln"))+RotatedAxis() 
+
+#Henry et al. markers:
+DotPlot(untreated_EPP,features = m_myo_prog)+RotatedAxis() 
+DotPlot(untreated_EPP,features = m_luminal_hormone_neg_prog)+RotatedAxis() 
+DotPlot(untreated_EPP,features = m_luminal_ductal_diff_fxyd2 )+RotatedAxis() 
+DotPlot(untreated_EPP,features = m_luminal_alveolar_prog_lalba )+RotatedAxis() 
+DotPlot(untreated_EPP,features = m_luminal_alveolar_aldh1a3)+RotatedAxis()  
+DotPlot(untreated_EPP,features = m_luminal_ductal_diff_rcan1)+RotatedAxis() 
+DotPlot(untreated_EPP,features = m_common_luminal_prog_tet2)+RotatedAxis() 
+DotPlot(untreated_EPP,features = m_myo_diff)+RotatedAxis() 
+DotPlot(untreated_EPP,features = m_bipotential_prog)+RotatedAxis() 
+DotPlot(untreated_EPP,features = m_proliferating_lum_alveolar)+RotatedAxis() 
+DotPlot(untreated_EPP,features = EC_genes)+RotatedAxis()  
+
+```
+
+```{r}
+#Rename clusters for paper
+
+#with classifications for fig 3A
+untreated_EPP_names <- RenameIdents(untreated_EPP, `1` = "OP1. LASP1", `2` = "OP2. LHS1", `3` = "OP3. LASP2",`4` = "OP4. LHS2",`5` = "OP5. BMyo1",`6` = "OP6. LASP3 (Proliferating)",`7` = "OP7. BL1",`8` = "OP8. LHS3 (Proliferating)",`9` = "OP9. LHS4 (Proliferating)", `10` = "OP10. BL2")
+
+
+DimPlot(untreated_EPP_names, reduction = "umap", label = FALSE) 
+
+#with correct numbering for fig 3C
+
+untreated_EPP_numbers <- RenameIdents(untreated_EPP, `1` = "OP1", `2` = "OP2", `3` = "OP3",`4` = "OP4",`5` = "OP5",`6` = "OP6",`7` = "OP7",`8` = "OP8",`9` = "OP9", `10` = "OP10")
+
+DimPlot(untreated_EPP_numbers, reduction = "umap", label = TRUE) 
+
+DimPlot(untreated_EPP_numbers, reduction = "umap", label = TRUE, split.by = "Origin") 
+
+```
+
+
+```{r}
+
+#Build dendrogram to re-order clusters based on their relationship 
+untreated_EPP_numbers <- BuildClusterTree(untreated_EPP_numbers,dims=1:10)
+
+plot(untreated_EPP_numbers@tools$BuildClusterTree)
+
+
+# Re-organize from bottom up, based on dendrogram 
+levels(untreated_EPP_numbers) <- c("OP9", "OP6", "OP8", "OP5", "OP7" , "OP2", "OP10", "OP4", "OP1", "OP3")
+
+```
+
+```{r}
+
+#Plot EC genes for paper with re-organized clusters
+
+DotPlot(untreated_EPP_numbers,features = EC_genes)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))
+
+```
+
+```{r}
+#Plot percentage of cells / cluster
+
+untreated_EPP@meta.data %>%
+  group_by(seurat_clusters, Origin) %>%
+  count() %>%
+  group_by(Origin) %>%
+  mutate(percent=100*n/sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=seurat_clusters,y=percent, fill= Origin)) +
+  geom_col() +
+  ggtitle("Percentage of Cells in Each Clusters per Sample")+
+  theme_classic()
+
+```
+
+
+
+```{r}
+
+#Save object to computer
+saveRDS(untreated_EPP, file = "path/to/untreated_EPP_mice.rds")
+
+#Load object
+untreated_EPP <- readRDS(file = "patho/to/untreated_EPP_mice.rds")
+
+```
+
+
+```{r}
+
+#GSEA for OP clusters
+
+untreated_EPP.markers_c1 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 1,]
+cluster_1 <- to.gsea(untreated_EPP.markers_c1)
+write.table(cluster_1, '/path/to/EPP_c1_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c2 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 2,]
+cluster_2 <- to.gsea(untreated_EPP.markers_c2)
+write.table(cluster_2, '/path/to/EPP_c2_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c3 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 3,]
+cluster_3 <- to.gsea(untreated_EPP.markers_c3)
+write.table(cluster_3, '/path/to/EPP_c3_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c4 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 4,]
+cluster_4 <- to.gsea(untreated_EPP.markers_c4)
+write.table(cluster_4, '/path/to/EPP_c4_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c5 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 5,]
+cluster_5 <- to.gsea(untreated_EPP.markers_c5)
+write.table(cluster_5, '/path/to/EPP_c5_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c6 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 6,]
+cluster_6 <- to.gsea(untreated_EPP.markers_c6)
+write.table(cluster_6, '/path/to/EPP_c6_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c7 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 7,]
+cluster_7 <- to.gsea(untreated_EPP.markers_c7)
+write.table(cluster_7, '/path/to/EPP_c7_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c8 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 8,]
+cluster_8 <- to.gsea(untreated_EPP.markers_c8)
+write.table(cluster_8, '/path/to/EPP_c8_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c9 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 9,]
+cluster_9 <- to.gsea(untreated_EPP.markers_c9)
+write.table(cluster_9, '/path/to/EPP_c9_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+untreated_EPP.markers_c10 <- untreated_EPP.markers[untreated_EPP.markers$cluster == 10,]
+cluster_10 <- to.gsea(untreated_EPP.markers_c10)
+write.table(cluster_10, '/path/to/EPP_c10_markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+##
+
+plot_cluster <- read.csv("/path/to/MOUSE_UNTREATED_V_EPP_GSEA/summary_plot.csv")
+
+#keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+#Plot
+
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("Summary of enriched processes in each OP cluster") + xlab("Cluster") + ylab("Hallmark terms") + theme_bw() + scale_x_continuous(breaks = seq(1, 10, by = 1)) + expand_limits(x = 1)
+```
+
+```{r}
+
+#Estrogen vs EPP clustering analysis
+
+estrogen_EPP <- subset(SL02_Sobg_female, subset = Condition == "Female Estrogen Low" | Condition == "Female EPP" | Condition == "Female Estrogen High" )
+
+#Process data
+
+#Normalize
+estrogen_EPP <- NormalizeData(estrogen_EPP)
+
+estrogen_EPP <- FindVariableFeatures(estrogen_EPP, selection.method = "vst", nfeatures = 2000)
+
+estrogen_EPP <- ScaleData(estrogen_EPP)
+
+estrogen_EPP <- RunPCA(estrogen_EPP, features = VariableFeatures(estrogen_EPP)) 
+
+DimPlot(estrogen_EPP, reduction = "pca", group.by = "Condition")
+
+
+ElbowPlot(estrogen_EPP)
+
+```
+
+```{r}
+
+#therefore using dims of 10
+
+estrogen_EPP <- FindNeighbors(estrogen_EPP, dims = 1:15)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+estrogen_EPP <- FindClusters(object = estrogen_EPP, resolution = resolution.range)
+
+clustree(estrogen_EPP) #Choosing 0.3 resolution or less based on Clustree
+
+
+```
+
+```{r}
+
+#Clustering
+estrogen_EPP <- FindClusters(object = estrogen_EPP, resolution = 0.3)
+
+#Reduce dimensions
+estrogen_EPP <- RunUMAP(estrogen_EPP, dims = 1:15)
+
+#Rename clusters starting from 1 instead of 0
+estrogen_EPP$seurat_clusters <- as.factor(as.numeric(as.character(estrogen_EPP$seurat_clusters)) + 1)
+estrogen_EPP <- RenameIdents(estrogen_EPP, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6",`6` = "7",`7` = "8",`8` = "9")
+
+#Plot UMAP
+DimPlot(estrogen_EPP, reduction = "umap", label = TRUE) 
+
+
+#Add column to organize conditions
+estrogen_EPP@meta.data$Origin<- NA
+
+# Adding column based on other column:
+estrogen_EPP@meta.data <- estrogen_EPP@meta.data %>%
+  mutate(Origin = case_when(
+    endsWith(Condition, "Female EPP") ~ "3. EPP",
+    endsWith(Condition, "Female Estrogen Low") ~ "1. Low Estrogen",
+    endsWith(Condition, "Female Estrogen High") ~ "2. High Estrogen"
+    ))
+
+#Split plot by organized conditions
+DimPlot(estrogen_EPP, reduction = "umap", label = TRUE, split.by = "Origin") 
+```
+
+
+```{r}
+
+#Lineage markers
+
+#Basic markers first:
+
+DotPlot(estrogen_EPP,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7", "Oxtr", "Csn2", "Csn3", "Prlr", "Pgr", "Esr1", "Tagln"), col.min = 0)+RotatedAxis() 
+
+#Henry et al. markers:
+
+DotPlot(estrogen_EPP,features = m_myo_prog)+RotatedAxis() 
+DotPlot(estrogen_EPP,features = m_luminal_hormone_neg_prog)+RotatedAxis() 
+DotPlot(estrogen_EPP,features = m_luminal_ductal_diff_fxyd2 )+RotatedAxis() 
+DotPlot(estrogen_EPP,features = m_luminal_alveolar_prog_lalba )+RotatedAxis() 
+DotPlot(estrogen_EPP,features = m_luminal_alveolar_aldh1a3)+RotatedAxis()  
+DotPlot(estrogen_EPP,features = m_luminal_ductal_diff_rcan1)+RotatedAxis() 
+DotPlot(estrogen_EPP,features = m_common_luminal_prog_tet2)+RotatedAxis() 
+DotPlot(estrogen_EPP,features = m_myo_diff)+RotatedAxis() 
+DotPlot(estrogen_EPP,features = m_bipotential_prog)+RotatedAxis() 
+DotPlot(estrogen_EPP,features = m_proliferating_lum_alveolar)+RotatedAxis() 
+DotPlot(estrogen_EPP,features = EC_genes)+RotatedAxis()  
+
+```
+
+
+```{r}
+#Rename clusters for paper
+estrogen_EPP_names <- RenameIdents(estrogen_EPP, `1` = "OEP1. LASP1", `2` = "OEP2. LASP2", `3` = "OEP3. LHS1",`4` = "OEP4. BMyo1",`5` = "OEP5. LHS2",`6` = "OEP6. LASP3 (Proliferating)",`7` = "OEP7. LHS3 (Proliferating",`8` = "OEP8. BL1",`9` = "OEP9. BL2")
+
+estrogen_EPP_numbers <- RenameIdents(estrogen_EPP, `1` = "OEP1", `2` = "OEP2", `3` = "OEP3",`4` = "OEP4",`5` = "OEP5", `6` = "OEP6", `7` = "OEP7", `8` = "OEP8", `9` = "OEP9")
+
+#Split by origin in plot, with correct numbering
+DimPlot(estrogen_EPP_numbers, reduction = "umap", label =TRUE, split.by = "Origin") 
+
+#With correct names
+DimPlot(estrogen_EPP_names, reduction = "umap", label = FALSE, split.by = "Origin") 
+
+
+#Save
+saveRDS(estrogen_EPP, file = "/patho/to/estrogen_EPP.rds")
+
+estrogen_EPP <- readRDS(file = "/path/to/estrogen_EPP.rds")
+```
+
+```{r}
+#Build dendrogram to re-order clusters based on their relationship 
+estrogen_EPP_numbers <- BuildClusterTree(estrogen_EPP_numbers,dims=1:10)
+plot(estrogen_EPP_numbers@tools$BuildClusterTree)
+
+
+```
+
+```{r}
+# Re-organize from bottom up, based on dendrogram 
+levels(estrogen_EPP_numbers) <- c("OEP6", "OEP7", "OEP8", "OEP4", "OEP1", "OEP2", "OEP3", "OEP5", "OEP9")
+
+#Plot
+DotPlot(estrogen_EPP_numbers,features = EC_genes)+RotatedAxis()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))
+
+```
+
+```{r}
+
+#Bar plot of percentage of each cluster per condition
+
+#Plot percentage of cells / cluster
+
+estrogen_EPP@meta.data %>%
+  group_by(seurat_clusters, Origin) %>%
+  count() %>%
+  group_by(Origin) %>%
+  mutate(percent=100*n/sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=seurat_clusters,y=percent, fill= Origin)) +
+  geom_col() +
+  ggtitle("Percentage of Cells in Each Clusters per Sample")+
+  theme_classic()
+
+```
+
+
+
+```{r}
+
+#Projection of cluster OE6 markers onto untreated_EPP
+estrogen_OE6 <- untreated_estrogen.markers[untreated_estrogen.markers$cluster == 6,] #Get markers from OE6
+
+genes_OE6 <- estrogen_OE6[ , ncol(estrogen_OE6)]  #Select genes only - create module
+
+untreated_EPP <- AddModuleScore_UCell(untreated_EPP, features = list(genes_OE6), name="cluster_OE6") #Score for expression of genes in module
+
+#Plot with gradient
+library(RColorBrewer)
+FeaturePlot(untreated_EPP, features = "signature_1cluster_OE6", min.cutoff = 0)+ scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdBu")))
+
+```
+
+```{r}
+
+#Integration of untreated_EPP + Bach et al. data from MECs during pregnancy
+
+#Batch effect correction
+reference.list <- list(untreated_EPP, NP_1, NP_2,G_1, G_2, L_1, L_2, PI_1, PI_2)
+
+#Run Normal PreProcessing on each object in list
+for (i in 1:length(reference.list)) {
+    reference.list[[i]] <-
+        NormalizeData(reference.list[[i]], verbose = FALSE)
+    reference.list[[i]] <-
+        FindVariableFeatures(
+            reference.list[[i]],
+            selection.method = "vst",
+            nfeatures = 2000,
+            verbose = FALSE
+        )
+}
+
+gc()
+
+
+#Batch effect correction during integration
+bach_EPP.anchors <- FindIntegrationAnchors(object.list = reference.list , dims = 1:30)
+
+bach_EPP.integrated <- IntegrateData(anchorset = bach_EPP.anchors, dims = 1:30)
+
+DefaultAssay(bach_EPP.integrated) <- "integrated"
+
+#Normal processing
+genes.in.use <- 2000
+
+bach_EPP.integrated <- FindVariableFeatures(bach_EPP.integrated, selection.method = "vst", nfeatures = genes.in.use)
+
+bach_EPP.integrated <- ScaleData(bach_EPP.integrated)
+
+bach_EPP.integrated <- RunPCA(bach_EPP.integrated, features = VariableFeatures(bach_EPP.integrated)) 
+
+DimPlot(bach_EPP.integrated, reduction = "pca", group.by = "Condition")
+
+ElbowPlot(bach_EPP.integrated)
+
+```
+
+
+```{r}
+
+#using dims of 10
+bach_EPP.integrated <- FindNeighbors(bach_EPP.integrated, dims = 1:10)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+bach_EPP.integrated <- FindClusters(object = bach_EPP.integrated, resolution = resolution.range)
+
+clustree(bach_EPP.integrated) #Choosing 0.2 resolution or less based on Clustree
+
+```
+
+```{r}
+Idents(bach_EPP.integrated) <- bach_EPP.integrated@meta.data$RNA_snn_res.0.2
+
+bach_EPP.integrated <- RunUMAP(bach_EPP.integrated, dims = 1:10)
+
+#Rename clusters starting from 1 instead of 0
+bach_EPP.integrated <- RenameIdents(bach_EPP.integrated, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6",`6` = "7")
+
+#Plot UMAP
+DimPlot(bach_EPP.integrated, reduction = "umap", label = TRUE) 
+
+
+#Add column to organize conditions
+bach_EPP.integrated@meta.data$Summary<- NA
+
+#Adding column based on other column:
+bach_EPP.integrated@meta.data <- bach_EPP.integrated@meta.data %>%
+  mutate(Summary = case_when(
+    endsWith(Condition, "Female Untreated") ~ "1. Untreated organoids",
+    endsWith(Condition, "Female EPP") ~ "2. EPP-treated organoids",
+    endsWith(Condition, "NP_1") ~ "3. Nulliparous",
+    endsWith(Condition, "NP_2") ~ "3. Nulliparous",
+    endsWith(Condition, "G_1") ~ "4. Gestation",
+    endsWith(Condition, "G_2") ~ "4. Gestation",
+    endsWith(Condition, "L_1") ~ "5. Lactation",
+    endsWith(Condition, "L_2") ~ "5. Lactation",
+    endsWith(Condition, "PI_1") ~ "6. Involution",
+    endsWith(Condition, "PI_2") ~ "6. Involution"
+    ))
+
+#Number of cells per condition
+table(bach_EPP.integrated@meta.data$Summary)
+
+#Untreated organoids - 10,508
+#EPP-treated organoids - 16,463
+#Nulliparous (no pregnancy) - 4,135
+#Gestation - 5,623
+#Lactation - 9,595
+#Involution - 5,732
+
+#Split plot by organized conditions
+DimPlot(bach_EPP.integrated, reduction = "umap", label = TRUE, split.by = "Summary") 
+```
+
+
+```{r}
+
+#Remove low Epcam clusters and re-cluster
+DefaultAssay(bach_EPP.integrated) <- "RNA"
+DotPlot(bach_EPP.integrated,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7", "Oxtr", "Csn2", "Csn3", "Prlr", "Pgr", "Esr1"))+RotatedAxis() 
+
+DefaultAssay(bach_EPP.integrated) <- "integrated"
+
+#Eliminate clusters 6 and 7
+bach_EPP_EC <- subset(x = bach_EPP.integrated, idents = c("1", "2", "3", "4", "5"))
+
+```
+
+
+
+```{r}
+#Re-cluster epithelial cells
+DefaultAssay(bach_EPP_EC) <- "RNA"
+
+bach_EPP_rEC <- NormalizeData(bach_EPP_EC)
+
+DefaultAssay(bach_EPP_rEC) <- "integrated"
+
+genes.in.use <- 2000
+
+bach_EPP_rEC <- FindVariableFeatures(bach_EPP_rEC, selection.method = "vst", nfeatures = genes.in.use)
+
+bach_EPP_rEC <- ScaleData(bach_EPP_rEC)
+
+bach_EPP_rEC <- RunPCA(bach_EPP_rEC, features = VariableFeatures(bach_EPP_rEC)) 
+
+DimPlot(bach_EPP_rEC, reduction = "pca", group.by = "Condition")
+
+ElbowPlot(bach_EPP_rEC)
+
+
+#Number of cells
+table(bach_EPP_rEC@meta.data$Summary)
+
+#Untreated organoids - 10,497
+#EPP-treated organoids - 16,449
+#Nulli - 4,004
+#Gestation - 5,216
+#Lactation - 8,222
+#Involution - 5,607
+```
+
+```{r}
+
+#Using dims of 10
+
+bach_EPP_rEC <- FindNeighbors(bach_EPP_rEC, dims = 1:10)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+bach_EPP_rEC <- FindClusters(object = bach_EPP_rEC, resolution = resolution.range)
+
+clustree(bach_EPP_rEC) #choosing 0.2 resolution or less based on Clustree
+
+
+```
+
+```{r}
+
+bach_EPP_rEC <- FindClusters(object = bach_EPP_rEC, resolution = 0.2)
+
+bach_EPP_rEC <- RunUMAP(bach_EPP_rEC, dims = 1:10)
+
+#Rename clusters starting from 1 instead of 0
+
+bach_EPP_rEC$seurat_clusters <- as.factor(as.numeric(as.character(bach_EPP_rEC$seurat_clusters)) + 1)
+
+
+bach_EPP_rEC <- RenameIdents(bach_EPP_rEC, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6",`6` = "7")
+
+
+DimPlot(bach_EPP_rEC, reduction = "umap", label = TRUE) 
+
+
+#Split plot by organized conditions
+DimPlot(bach_EPP_rEC, reduction = "umap", label = TRUE, split.by = "Summary") 
+```
+
+```{r}
+
+#Top differentially expressed genes (DEGs) per cluster
+bach_EPP_rEC.markers <- FindAllMarkers(bach_EPP_rEC, only.pos = TRUE)
+
+bach_EPP_rEC.top10 <- bach_EPP_rEC.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = avg_log2FC)
+DoHeatmap(bach_EPP_rEC, features = bach_EPP_rEC.top10$gene)
+
+
+```
+
+```{r}
+
+#Cell cycle scoring
+orgs_intact_bach_rEC <- CellCycleScoring(orgs_intact_bach_rEC, s.features = s.genes, g2m.features = g2m.genes)
+
+DimPlot(orgs_intact_bach_rEC, reduction = "umap", split.by = "Phase")
+
+```
+
+
+```{r}
+#Plot percentage of cells per cluster
+
+bach_EPP_rEC@meta.data %>%
+  group_by(seurat_clusters, Summary) %>%
+  count() %>%
+  group_by(Summary) %>%
+  mutate(percent=100*n/sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=seurat_clusters,y=percent, fill= Summary)) +
+  geom_col() +
+  ggtitle("Percentage of Cells in Each Clusters per Sample")+
+  theme_classic()
+
+
+```
+
+
+```{r}
+#Save object
+
+saveRDS(bach_EPP_rEC, file = "/path/to/bach_EPP_rEC.rds")
+
+bach_EPP_rEC <- readRDS(file = "/path/to/bach_EPP_rEC.rds")
+
+```
+
+
+```{r}
+
+#Plot lineage markers
+
+#Basic markers first
+
+DefaultAssay(bach_EPP_rEC) <- "RNA"
+
+DotPlot(bach_EPP_rEC,features = c("Epcam", "Krt8", "Krt18", "Krt5", "Krt14", "Krt7", "Oxtr", "Csn2", "Csn3", "Lalba", "Aldh1a3", "Prlr", "Pgr", "Esr1", "Tagln"), col.min = 0)+RotatedAxis() 
+
+
+#Henry et al. markers:
+
+DotPlot(bach_EPP_rEC,features = m_myo_prog)+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = m_luminal_hormone_neg_prog)+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = m_luminal_ductal_diff_fxyd2 )+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = m_luminal_alveolar_prog_lalba )+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = m_luminal_alveolar_aldh1a3)+RotatedAxis()  
+DotPlot(bach_EPP_rEC,features = m_luminal_ductal_diff_rcan1)+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = m_common_luminal_prog_tet2)+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = m_myo_diff)+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = m_bipotential_prog)+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = m_proliferating_lum_alveolar)+RotatedAxis() 
+DotPlot(bach_EPP_rEC,features = EC_genes)+RotatedAxis() 
+```
+
+```{r}
+
+#Rename clusters for paper
+
+#With classifications
+bach_EPP_rEC_names <- RenameIdents(bach_EPP_rEC, `1` = "OIP1. LASP1", `2` = "OIP2. LHS1", `3` = "OIP3. BMyo1",`4` = "OIP4. BMyo2",`5` = "OIP5. LASP2 (Proliferating)",`6` = "OIP6. LHS2",`7` = "OIP7. LHS3 (Proliferating)")
+
+
+DimPlot(bach_EPP_rEC_names, reduction = "umap", label = FALSE) 
+
+#With correct numbering 
+
+bach_EPP_rEC_numbers <- RenameIdents(bach_EPP_rEC, `1` = "OIP1", `2` = "OIP2", `3` = "OIP3",`4` = "OIP4",`5` = "OIP5",`6` = "OIP6",`7` = "OIP7")
+
+#Plot
+DimPlot(bach_EPP_rEC_numbers, reduction = "umap", label = TRUE) 
+
+DimPlot(bach_EPP_rEC_numbers, reduction = "umap", label = TRUE, split.by = "Summary") 
+
+```
+
+
+
+```{r}
+
+#Build dendrogram 
+
+bach_EPP_rEC_numbers <- BuildClusterTree(bach_EPP_rEC_numbers,dims=1:10)
+
+plot(bach_EPP_rEC_numbers@tools$BuildClusterTree)
+
+
+```
+
+```{r}
+
+# Re-organize from bottom up, based on dendrogram 
+
+levels(bach_EPP_rEC_numbers) <- c("OIP5", "OIP7", "OIP3", "OIP1", "OIP6", "OIP2", "OIP4")
+
+DefaultAssay(bach_EPP_rEC_numbers) <- "RNA"
+
+#Plot with markers and correct order of cluster relationships
+
+DotPlot(bach_EPP_rEC_numbers,features = EC_genes)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))
+
+
+DotPlot(bach_EPP_rEC_numbers,features = EC_genes)+RotatedAxis()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))+RotatedAxis()
+
+```
+
+
+```{r}
+
+#Human organoids analysis
+
+#Save path to folder with human organoids here
+ data_dir <- "/path/to/AK01_aggr/"
+
+# let's use Seurat to create our object...
+AK01_aggr <- Read10X(data.dir = data_dir)
+
+AK01_aggr = CreateSeuratObject(counts = AK01_aggr, min.cells = 3, min.features = 200)
+
+#Add IDs - Create column with origin
+AK01_aggr@meta.data$ID <- NA
+AK01_aggr@meta.data[grepl("1",row.names(AK01_aggr@meta.data)),]$ID <- "CtrA" #control A
+AK01_aggr@meta.data[grepl("2",row.names(AK01_aggr@meta.data)),]$ID <- "CtrB" #control B
+AK01_aggr@meta.data[grepl("3",row.names(AK01_aggr@meta.data)),]$ID <- "D10" #EPP-treated for 10 days
+AK01_aggr@meta.data[grepl("4",row.names(AK01_aggr@meta.data)),]$ID <- "D21A" #EPP-treated for 21 days - sample A
+AK01_aggr@meta.data[grepl("5",row.names(AK01_aggr@meta.data)),]$ID <- "D21B" #EPP-treated for 21 days - sample B
+
+
+#Check initial quality of object - mitochondrial content
+AK01_aggr[["percent.mt"]] <- PercentageFeatureSet(AK01_aggr, pattern = "^MT-")
+
+VlnPlot(AK01_aggr, features = c("nFeature_RNA", "nCount_RNA","percent.mt"))
+
+table(AK01_aggr@meta.data$ID)
+
+#CtrA  CtrB   D10  D21A  D21B    
+#11156  7583  7646  5306  5824 
+
+#10% mit content
+AK01_aggr <- subset(AK01_aggr, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10 )
+
+table(AK01_aggr@meta.data$ID)
+
+#CtrA  CtrB   D10  D21A  D21B   
+#10408  5388  6204  4101  4504  
+
+
+
+```
+
+
+```{r}
+#Individual processing of human organoid samples treated with EPP
+
+#Normalize
+AK01_aggr <- NormalizeData(AK01_aggr)
+
+AK01_aggr <- FindVariableFeatures(AK01_aggr, selection.method = "vst", nfeatures = 2000)
+
+AK01_aggr <- ScaleData(AK01_aggr)
+
+AK01_aggr <- RunPCA(AK01_aggr, features = VariableFeatures(AK01_aggr)) 
+
+DimPlot(AK01_aggr, reduction = "pca", group.by = "ID")
+
+ElbowPlot(AK01_aggr)
+
+```
+
+```{r}
+
+#using dims of 10
+
+AK01_aggr <- FindNeighbors(AK01_aggr, dims = 1:10)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+AK01_aggr <- FindClusters(object = AK01_aggr, resolution = resolution.range)
+
+clustree(AK01_aggr) #choosing 0.2 resolution or less based on Clustree
+
+```
+
+```{r}
+
+AK01_aggr <- FindClusters(object = AK01_aggr, resolution = 0.2)
+
+AK01_aggr <- RunUMAP(AK01_aggr, dims = 1:10)
+
+#Rename clusters starting from 1 instead of 0
+AK01_aggr <- RenameIdents(AK01_aggr, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6", `6` = "7")
+
+
+DimPlot(AK01_aggr, reduction = "umap", label = TRUE) 
+
+
+#Split plot by organized conditions
+DimPlot(AK01_aggr, reduction = "umap", label = TRUE, split.by = "ID") 
+
+#Add column to organize conditions
+AK01_aggr@meta.data$Summary<- NA
+
+# Adding column based on other column:
+AK01_aggr@meta.data <- AK01_aggr@meta.data %>%
+  mutate(Summary = case_when(
+    endsWith(ID, "CtrA") ~ "1. Untreated human organoids",
+    endsWith(ID, "CtrB") ~ "1. Untreated human organoids",
+    endsWith(ID, "D10") ~ "2. Early treated human organoids",
+    endsWith(ID, "D21A") ~ "3. Late treated human organoids",
+    endsWith(ID, "D21B") ~ "3. Late treated human organoids"
+    ))
+
+DimPlot(AK01_aggr, reduction = "umap", label = TRUE, split.by = "Summary") 
+
+```
+
+```{r}
+
+#Checking for non-EC content
+
+DotPlot(AK01_no_D3,features = c("EPCAM", "KRT8", "KRT18", "KRT5", "KRT14", "KRT7", "OXTR", "CSN2", "CSN3", "PRLR", "PGR", "ESR1"))+RotatedAxis() 
+
+#Cluster 7 appears to be low in EPCAM and cytokeratins expression
+
+#Re-cluster without cluster 7
+AK01_rEC <-subset(x = AK01_no_D3, idents = c("1", "2", "3", "4", "5", "6"))
+
+#number of cells retained:
+table(AK01_rEC@meta.data$Summary)
+
+#    1. Untreated human organoids 2. Early treated human organoids  3. Late treated human organoids 
+#                           14621                             5888                             8167 
+
+```
+
+```{r}
+
+#Re-clustering without cluster 7
+
+#Normalize
+AK01_rEC <- NormalizeData(AK01_rEC)
+
+AK01_rEC <- FindVariableFeatures(AK01_rEC, selection.method = "vst", nfeatures = 2000)
+
+AK01_rEC <- ScaleData(AK01_rEC)
+
+AK01_rEC <- RunPCA(AK01_rEC, features = VariableFeatures(AK01_rEC)) 
+
+DimPlot(AK01_rEC, reduction = "pca", group.by = "ID")
+
+
+ElbowPlot(AK01_rEC)
+
+```
+
+```{r}
+
+#Using dims of 10
+
+AK01_rEC <- FindNeighbors(AK01_rEC, dims = 1:10)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+AK01_rEC <- FindClusters(object = AK01_rEC, resolution = resolution.range)
+
+clustree(AK01_rEC) #Choosing 0.3 resolution or less based on Clustree
+
+```
+
+```{r}
+
+AK01_rEC <- FindClusters(object = AK01_rEC, resolution = 0.3)
+
+AK01_rEC <- RunUMAP(AK01_rEC, dims = 1:10)
+
+#Rename clusters starting from 1 instead of 0
+
+AK01_rEC$seurat_clusters <- as.factor(as.numeric(as.character(AK01_rEC$seurat_clusters)) + 1)
+
+AK01_rEC <- RenameIdents(AK01_rEC, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5",`5` = "6", `6` = "7", `7` = "8", `8` = "9" )
+
+DimPlot(AK01_rEC, reduction = "umap", label = TRUE) 
+
+#Split plot by organized conditions
+DimPlot(AK01_rEC, reduction = "umap", label = TRUE, split.by = "Summary") 
+
+```
+
+
+```{r}
+
+#Basic markers
+
+DotPlot(AK01_rEC,features = c("EPCAM", "KRT8", "KRT18", "KRT5", "KRT14", "KRT7", "OXTR", "CSN2", "CSN3", "PRLR", "PGR", "ESR1", "ALDH1A3", "LALBA"), col.min = 0)+RotatedAxis() 
+
+#Many clusters appear to be basal luminal
+#Violin plots divided by condition to determine if this is because of pregnancy:
+AK01_unt <- subset(AK01_rEC, subset = Summary == "1. Untreated human organoids")
+AK01_early <- subset(AK01_rEC, subset = Summary == "2. Early treated human organoids")
+AK01_late <- subset(AK01_rEC, subset = Summary == "3. Late treated human organoids")
+
+VlnPlot(AK01_unt, features = c("KRT8", "KRT18", "KRT5", "KRT14"), pt.size = 0)
+VlnPlot(AK01_early, features = c("KRT8", "KRT18", "KRT5", "KRT14"), pt.size = 0)
+VlnPlot(AK01_late, features = c("KRT8", "KRT18", "KRT5", "KRT14"), pt.size = 0)
+
+
+```
+
+
+```{r}
+
+#Top differentially expressed genes (DEGs) per cluster
+AK01_rEC.markers <- FindAllMarkers(AK01_rEC, only.pos = TRUE)
+
+AK01_rEC.top10 <- AK01_rEC.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = avg_log2FC)
+DoHeatmap(AK01_rEC, features = AK01_rEC.top10$gene)
+
+```
+
+```{r}
+
+#Other cytokeratin markers that popped up as DEGs
+VlnPlot(AK01_rEC, features = c("KRT6", "KRT7"), pt.size = 0)
+
+```
+
+
+```{r}
+
+#Dotplot based on top DEGs and classic markers:
+
+gene_markers_human <- c("FDCSP", "AREG", "BIRC3", "ODAM", "FKBP5", "TTYH1", "SH3KBP1", "NCL", "CAST", "GABRP", "CDCA3", "ARL6IP1", "CCNB1", "TPX2", "SLC2A1", "NDRG1", "EGLN3", "DDIT4", "PROM1", "QPRT", "RARRES1", "CLDN3", "WFDC2", "IDH2", "CD24", "BST2", "TRNP1", "ISG15", "HSPB1", "AZGP1", "NUPR1", "TSC22D3", "GADD45G", "SOD2", "VEGFA", "SNHG1", "LCN2", "SAA1", "FXYD3", "CLU", "TXNIP", "CRABP2", "MKI67", "CCNB2", "UBE2C", "ASPM", "PTTG1")
+
+
+DotPlot(AK01_rEC,features = gene_markers_human)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=6))
+
+```
+
+```{r}
+#Cell cycle scoring
+AK01_rEC <- CellCycleScoring(AK01_rEC, s.features = s.genes, g2m.features = g2m.genes)
+
+DimPlot(AK01_rEC, reduction = "umap", split.by = "Phase")
+
+```
+
+
+```{r}
+
+#Human orgs with correct classifications
+AK01_rEC_names <- RenameIdents(AK01_rEC, `1` = "HOP1. LHS1", `2` = "HOP2. BMyo1", `3` = "HOP3. LHS2 (Proliferating)",`4` = "HOP4. LASP1",`5` = "HOP5. LHS3 (Proliferating)",`6` = "HOP6. LHS4", `7` = "HOP7. BMyo2", `8` = "HOP8. LHS5", `9` = "HOP9. LHS6")
+
+#Plot UMAP
+DimPlot(AK01_rEC_names, reduction = "umap", label = FALSE) 
+
+#Correct numbering
+AK01_rEC_numbers <- RenameIdents(AK01_rEC, `1` = "HOP1", `2` = "HOP2", `3` = "HOP3",`4` = "HOP4",`5` = "HOP5",`6` = "HOP6", `7` = "HOP7", `8` = "HOP8", `9` = "HOP9")
+
+#Plot UMAP
+DimPlot(AK01_rEC_numbers, reduction = "umap", label = TRUE) 
+
+#Split by condition
+DimPlot(AK01_rEC_numbers, reduction = "umap", label = TRUE, split.by = "Summary") 
+DimPlot(AK01_rEC_names, reduction = "umap", label = TRUE, split.by = "Summary") 
+
+#For paper
+DotPlot(AK01_rEC_numbers,features = gene_markers_human)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=6))
+
+```
+
+```{r}
+
+#Percentage per cluster
+
+AK01_rEC.integrated@meta.data %>%
+  group_by(seurat_clusters, Summary) %>%
+  count() %>%
+  group_by(Summary) %>%
+  mutate(percent=100*n/sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=seurat_clusters,y=percent, fill= Summary)) +
+  geom_col() +
+  ggtitle("Percentage of Cells in Each Clusters per Sample")+
+  theme_classic()
+
+```
+
+```{r}
+#Save processed object
+
+saveRDS(AK01_rEC, file = "path/to/AK01_rEC.rds")
+
+AK01_rEC <- readRDS(file = "path/to/AK01_rEC.rds")
+
+```
+
+
+```{r}
+#GSEA for enriched processes in HOP clusters - only using organoids without treatment so that EPP doesn't bias the initial results
+
+untreated_human <- subset(AK01_rEC, subset = Summary == "1. Untreated human organoids")
+
+#Individual cluster diffs
+
+untreated_human.markers <- FindAllMarkers(untreated_human, only.pos = TRUE)
+
+untreated_human.markers_c1 <- untreated_human.markers[untreated_human.markers$cluster == 1,]
+
+cluster_1 <- to.gsea(untreated_human.markers_c1)
+
+write.table(cluster_1, '/path/to/human_no_treatment_c1markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+#cluster 2
+
+untreated_human.markers_c2 <- untreated_human.markers[untreated_human.markers$cluster == 2,]
+
+cluster_2 <- to.gsea(untreated_human.markers_c2)
+
+write.table(cluster_2, '/path/to/human_no_treatment_c2markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+#cluster 3
+
+untreated_human.markers_c3 <- untreated_human.markers[untreated_human.markers$cluster == 3,]
+
+cluster_3 <- to.gsea(untreated_human.markers_c3)
+
+write.table(cluster_3, '/path/to/human_no_treatment_c3markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+#cluster 4
+
+untreated_human.markers_c4 <- untreated_human.markers[untreated_human.markers$cluster == 4,]
+
+cluster_4 <- to.gsea(untreated_human.markers_c4)
+
+write.table(cluster_4, '/path/to/human_no_treatment_c4markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+#cluster 5
+
+untreated_human.markers_c5 <- untreated_human.markers[untreated_human.markers$cluster == 5,]
+
+cluster_5 <- to.gsea(untreated_human.markers_c5)
+
+write.table(cluster_5, '/path/to/human_no_treatment_c5markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+#cluster 6
+
+untreated_human.markers_c6 <- untreated_human.markers[untreated_human.markers$cluster == 6,]
+
+cluster_6 <- to.gsea(untreated_human.markers_c6)
+
+write.table(cluster_6, '/path/to/human_no_treatment_c6markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+#cluster 7
+
+untreated_human.markers_c7 <- untreated_human.markers[untreated_human.markers$cluster == 7,]
+
+cluster_7 <- to.gsea(untreated_human.markers_c7)
+
+write.table(cluster_7, '/path/to/human_no_treatment_c7markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+#cluster 8
+
+untreated_human.markers_c8 <- untreated_human.markers[untreated_human.markers$cluster == 8,]
+
+cluster_8 <- to.gsea(untreated_human.markers_c8)
+
+write.table(cluster_8, '/path/to/human_no_treatment_c8markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+#cluster 9
+
+untreated_human.markers_c9 <- untreated_human.markers[untreated_human.markers$cluster == 9,]
+
+cluster_9 <- to.gsea(untreated_human.markers_c9)
+
+write.table(cluster_9, '/path/to/human_no_treatment_c9markers_forGSEA.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+plot_cluster <- read.csv("/path/to/human_no_treatment/summary_plot.csv")
+
+#keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("Enriched processes in HOP without treatment
+") + xlab("Cluster") + ylab("Hallmark terms") + theme_bw() + scale_x_continuous(breaks = seq(0, 9, by = 1))
+
+```
+
+
+```{r}
+#Comparing conditions
+
+cluster_1 <- subset(x = AK01_rEC, idents = "1")
+cluster_2 <- subset(x = AK01_rEC, idents = "2")
+cluster_3 <- subset(x = AK01_rEC, idents = "3")
+cluster_4 <- subset(x = AK01_rEC, idents = "4")
+cluster_5 <- subset(x = AK01_rEC, idents = "5")
+cluster_6 <- subset(x = AK01_rEC, idents = "6")
+cluster_7 <- subset(x = AK01_rEC, idents = "7")
+cluster_8 <- subset(x = AK01_rEC, idents = "8")
+cluster_9 <- subset(x = AK01_rEC, idents = "9")
+
+Idents(cluster_1) <- "Summary"
+Idents(cluster_2) <- "Summary"
+Idents(cluster_3) <- "Summary"
+Idents(cluster_4) <- "Summary"
+Idents(cluster_5) <- "Summary"
+Idents(cluster_6) <- "Summary"
+Idents(cluster_7) <- "Summary"
+Idents(cluster_8) <- "Summary"
+Idents(cluster_9) <- "Summary"
+
+
+#Untreated vs early EPP
+cluster_1 <- FindMarkers(cluster_1, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_1_gsea <- to.gsea.2.way(cluster_1)
+write.table(cluster_1_gsea, '/path/to/human_low_v_untreated_c1.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_2 <- FindMarkers(cluster_2, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_2_gsea <- to.gsea.2.way(cluster_2)
+write.table(cluster_2_gsea, '/path/to/human_low_v_untreated_c2.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_3 <- FindMarkers(cluster_3, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_3_gsea <- to.gsea.2.way(cluster_3)
+write.table(cluster_3_gsea, '/path/to/human_low_v_untreated_c3.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_4 <- FindMarkers(cluster_4, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_4_gsea <- to.gsea.2.way(cluster_4)
+write.table(cluster_4_gsea, '/path/to/human_low_v_untreated_c4.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_5 <- FindMarkers(cluster_5, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_5_gsea <- to.gsea.2.way(cluster_5)
+write.table(cluster_5_gsea, '/path/to/human_low_v_untreated_c5.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_6 <- FindMarkers(cluster_6, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_6_gsea <- to.gsea.2.way(cluster_6)
+write.table(cluster_6_gsea, '/path/to/human_low_v_untreated_c6.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_7 <- FindMarkers(cluster_7, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_7_gsea <- to.gsea.2.way(cluster_7)
+write.table(cluster_7_gsea, '/path/to/human_low_v_untreated_c7.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_8 <- FindMarkers(cluster_8, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_8_gsea <- to.gsea.2.way(cluster_8)
+write.table(cluster_8_gsea, '/path/to/human_low_v_untreated_c8.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_9 <- FindMarkers(cluster_9, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_9_gsea <- to.gsea.2.way(cluster_9)
+write.table(cluster_9_gsea, '/path/to/human_low_v_untreated_c9.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+
+plot_cluster <- read.csv("/path/to/HUMAN_UNT_EPP_GSEA/RESOLN_0.3/UNT_VS_10/summary_plot.csv")
+
+#keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+  
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("EPP at 10 days") + xlab("Cluster") + ylab("Hallmark terms") + theme_bw() + scale_x_continuous(breaks = seq(0, 9, by = 1))
+
+#########
+
+
+#untreated vs late EPP
+cluster_1 <- FindMarkers(cluster_1, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_1_gsea <- to.gsea.2.way(cluster_1)
+write.table(cluster_1_gsea, '/path/to/human_late_v_untreated_c1.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_2 <- FindMarkers(cluster_2, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_2_gsea <- to.gsea.2.way(cluster_2)
+write.table(cluster_2_gsea, '/path/to/human_late_v_untreated_c2.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_3 <- FindMarkers(cluster_3, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_3_gsea <- to.gsea.2.way(cluster_3)
+write.table(cluster_3_gsea, '/path/to/human_late_v_untreated_c3.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_4 <- FindMarkers(cluster_4, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_4_gsea <- to.gsea.2.way(cluster_4)
+write.table(cluster_4_gsea, '/path/to/human_late_v_untreated_c4.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_5 <- FindMarkers(cluster_5, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_5_gsea <- to.gsea.2.way(cluster_5)
+write.table(cluster_5_gsea, '/path/to/human_late_v_untreated_c5.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_6 <- FindMarkers(cluster_6, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_6_gsea <- to.gsea.2.way(cluster_6)
+write.table(cluster_6_gsea, '/path/to/human_late_v_untreated_c6.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_7 <- FindMarkers(cluster_7, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_7_gsea <- to.gsea.2.way(cluster_7)
+write.table(cluster_7_gsea, '/path/to/human_late_v_untreated_c7.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_8 <- FindMarkers(cluster_8, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_8_gsea <- to.gsea.2.way(cluster_8)
+write.table(cluster_8_gsea, '/path/to/human_late_v_untreated_c8.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_9 <- FindMarkers(cluster_9, only.pos = TRUE, ident.1 = "2. Early treated human organoids", ident.2 = "1. Untreated human organoids")
+cluster_9_gsea <- to.gsea.2.way(cluster_9)
+write.table(cluster_9_gsea, '/path/to/human_late_v_untreated_c9.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+plot_cluster <- read.csv("/path/to/HUMAN_UNT_EPP_GSEA/RESOLN_0.3/UNT_VS_21/summary_plot.csv")
+
+#keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+  
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("EPP at 21 days") + xlab("Cluster") + ylab("Hallmark terms") + theme_bw() + scale_x_continuous(breaks = seq(1, 9, by = 1))
+
+
+#######
+
+#Early vs late EPP
+cluster_1 <- FindMarkers(cluster_1, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_1_gsea <- to.gsea.2.way(cluster_1)
+write.table(cluster_1_gsea, '/path/to/human_late_v_early_c1.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_2 <- FindMarkers(cluster_2, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_2_gsea <- to.gsea.2.way(cluster_2)
+write.table(cluster_2_gsea, '/path/to/human_late_v_early_c2.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+cluster_3 <- FindMarkers(cluster_3, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_3_gsea <- to.gsea.2.way(cluster_3)
+write.table(cluster_3_gsea, '/path/to/human_late_v_early_c3.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_4 <- FindMarkers(cluster_4, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_4_gsea <- to.gsea.2.way(cluster_4)
+write.table(cluster_4_gsea, '/path/to/human_late_v_early_c4.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_5 <- FindMarkers(cluster_5, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_5_gsea <- to.gsea.2.way(cluster_5)
+write.table(cluster_5_gsea, '/path/to/human_late_v_early_c5.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_6 <- FindMarkers(cluster_6, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_6_gsea <- to.gsea.2.way(cluster_6)
+write.table(cluster_6_gsea, '/path/to/human_late_v_early_c6.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_7 <- FindMarkers(cluster_7, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_7_gsea <- to.gsea.2.way(cluster_7)
+write.table(cluster_7_gsea, '/path/to/human_late_v_early_c7.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_8 <- FindMarkers(cluster_8, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_8_gsea <- to.gsea.2.way(cluster_8)
+write.table(cluster_8_gsea, '/path/to/human_late_v_early_c8.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+cluster_9 <- FindMarkers(cluster_9, only.pos = TRUE, ident.1 = "3. Late treated human organoids", ident.2 = "2. Early treated human organoids")
+cluster_9_gsea <- to.gsea.2.way(cluster_9)
+write.table(cluster_9_gsea, '/path/to/human_late_v_early_c9.rnk',row.names = FALSE,col.names = TRUE,quote=FALSE,sep='\t')
+
+
+
+plot_cluster <- read.csv("/path/to/HUMAN_UNT_EPP_GSEA/EARLY_V_LATE/summary_plot.csv")
+
+#keep p values below 0.05
+
+plot_cluster_filt <- plot_cluster[plot_cluster$NOM.p.val < 0.05, ]
+
+#Column for -log(NOM.p.val + 0.01) 
+
+plot_cluster_filt$LOG_ADJ_P <- plot_cluster_filt$NOM.p.val + 0.01
+
+  
+ggplot(plot_cluster_filt , aes(x = CLUSTER, y = reorder(NAME, -log(LOG_ADJ_P)), size = -log(LOG_ADJ_P), col = NES)) + geom_point() + theme(axis.text = element_text(size = 10)) + ggtitle("EPP at 21 days vs EPP 10 days
+") + xlab("Cluster") + ylab("Hallmark terms") + theme_bw() + scale_x_continuous(breaks = seq(1, 9, by = 1))
+
+```
+
+
+```{r}
+
+#Evolutionary comparisons
+
+#Human untreated vs murine untreated
+
+
+#Save untreated mouse data in another obj to transform
+untreated_mouse <- untreated_only
+
+#Add labels
+untreated_mouse@meta.data$Origin<- NA
+untreated_mouse@meta.data[grepl("4",row.names(untreated_mouse@meta.data)),]$Origin <- "Untreated mouse organoids"
+
+#Modify orig.ident for clustering with human samples
+untreated_mouse@meta.data$orig.ident<- NA
+untreated_mouse@meta.data[grepl("4",row.names(untreated_mouse@meta.data)),]$orig.ident <- "untreated_mouse"
+
+
+```
+
+```{r}
+#Convert mouse gene names to human orthologs
+
+#You should have an csv file with orthologs - we obtained ours from Zilionis et al. 2019 - Supplementary table 4
+
+Mouse_Human_names = read.csv("/path/tohuman_mouse_orthologs.csv") #column names - Human orthologs and untreated_mouse.genes (mouse genes- modified to match name of your object)
+               
+#Merge by same column names with desired object
+convert <- merge(untreated_mouse@assays$RNA@data, Mouse_Human_names, by.x = 'row.names', by.y = 'untreated_mouse.genes')
+
+#remove row names
+rownames(convert) <- convert$Human_ortholog
+convert <- within(convert, rm("Row.names","Human_ortholog"))
+
+#create new assay
+human_convert_assay <- CreateAssayObject(convert)
+
+#add to object
+untreated_mouse[["HumanConvert"]] <- human_convert_assay
+ DefaultAssay(untreated_mouse) <- "HumanConvert"
+ 
+
+```
+
+
+
+```{r}
+
+
+#Separate early and late EPP treated human organoids to integrate with mouse data
+AK01_rEC_untreated_1@meta.data$Origin<- NA
+AK01_rEC_untreated_1@meta.data[grepl("1",row.names(AK01_rEC_untreated_1@meta.data)),]$Origin <- "Normal human organoids"
+
+AK01_rEC_untreated_2@meta.data$Origin<- NA
+AK01_rEC_untreated_2@meta.data[grepl("2",row.names(AK01_rEC_untreated_2@meta.data)),]$Origin <- "Normal human organoids"
+
+#Add HumanConvert assay to AK01_rEC objs to compare with mice
+ AK01_rEC_untreated_1[["HumanConvert"]] <- AK01_rEC_untreated_1@assays$RNA
+ DefaultAssay(AK01_rEC_untreated_1) <- "HumanConvert"
+ 
+AK01_rEC_untreated_2[["HumanConvert"]] <- AK01_rEC_untreated_2@assays$RNA
+ DefaultAssay(AK01_rEC_untreated_2) <- "HumanConvert"
+
+
+#Merge with human object and process
+
+# list of objects to merge
+our_h_m_orgs_untreated.list <- list(untreated_mouse, AK01_rEC_untreated_1, AK01_rEC_untreated_2)
+
+# Run Normal PreProcessing on Each our_h_m_orgs_untreated
+for (i in 1:length(our_h_m_orgs_untreated.list)) {
+    our_h_m_orgs_untreated.list[[i]] <-
+        NormalizeData(our_h_m_orgs_untreated.list[[i]], verbose = FALSE)
+    our_h_m_orgs_untreated.list[[i]] <-
+        FindVariableFeatures(
+            our_h_m_orgs_untreated.list[[i]],
+            selection.method = "vst",
+            nfeatures = 2000,
+            verbose = FALSE
+        )
+}
+
+gc()
+
+
+our_h_m_orgs_untreated.anchors <-
+    FindIntegrationAnchors(object.list = our_h_m_orgs_untreated.list, dims = 1:30)
+
+our_h_m_orgs_untreated.intergrated <-
+    IntegrateData(anchorset = our_h_m_orgs_untreated.anchors, dims = 1:30)
+
+```
+
+
+
+
+
+
+```{r}
+
+
+#Normal processing
+
+DefaultAssay(our_h_m_orgs_untreated.intergrated) <- "integrated"
+
+our_h_m_orgs_untreated.intergrated <- FindVariableFeatures(our_h_m_orgs_untreated.intergrated, selection.method = "vst", nfeatures = 2000)
+
+our_h_m_orgs_untreated.intergrated <- ScaleData(our_h_m_orgs_untreated.intergrated)
+
+our_h_m_orgs_untreated.intergrated <- RunPCA(our_h_m_orgs_untreated.intergrated, features = VariableFeatures(our_h_m_orgs_untreated.intergrated)) 
+
+DimPlot(our_h_m_orgs_untreated.intergrated, reduction = "pca", group.by = "orig.ident")
+
+
+ElbowPlot(our_h_m_orgs_untreated.intergrated)
+
+```
+
+```{r}
+
+#using dims of 15
+our_h_m_orgs_untreated.intergrated <- FindNeighbors(our_h_m_orgs_untreated.intergrated, dims = 1:15)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+our_h_m_orgs_untreated.intergrated <- FindClusters(object = our_h_m_orgs_untreated.intergrated, resolution = resolution.range)
+
+clustree(our_h_m_orgs_untreated.intergrated) #choosing 0.3 resolution or less based on Clustree
+
+```
+
+```{r}
+
+#Clustering
+our_h_m_orgs_untreated.intergrated <- FindClusters(object = our_h_m_orgs_untreated.intergrated, resolution = 0.3)
+
+#Reduce dimensions
+our_h_m_orgs_untreated.intergrated <- RunUMAP(our_h_m_orgs_untreated.intergrated, dims = 1:15)
+
+#Rename clusters starting from 1 instead of 0
+our_h_m_orgs_untreated.intergrated$seurat_clusters <- as.factor(as.numeric(as.character(our_h_m_orgs_untreated.intergrated$seurat_clusters)) + 1)
+our_h_m_orgs_untreated.intergrated <- RenameIdents(our_h_m_orgs_untreated.intergrated, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5", `5` = "6", `6` = "7", `7` = "8")
+
+
+DimPlot(our_h_m_orgs_untreated.intergrated, reduction = "umap", label = TRUE) 
+
+#Split plot by organized conditions
+DimPlot(our_h_m_orgs_untreated.intergrated, reduction = "umap", label = FALSE, split.by = "Origin") 
+
+
+
+```
+
+
+```{r}
+
+#Basic markers
+DefaultAssay(our_h_m_orgs_untreated.intergrated) <- "HumanConvert"
+
+DotPlot(our_h_m_orgs_untreated.intergrated,features = c("EPCAM", "EPCAM", "KRT8", "KRT18", "KRT5", "KRT14", "KRT7", "OXTR", "CSN2", "CSN3", "PRLR", "PGR", "ESR1"), col.min = 0)+RotatedAxis()
+
+#These clusters are very basal-luminal still, murine organoids didn't skew the clustering by much
+
+```
+
+
+```{r}
+
+#Use markers from AK01_rEC
+DotPlot(our_h_m_orgs_untreated.intergrated,features = gene_markers_human)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=6))
+
+```
+
+```{r}
+#Cell cycle scoring
+our_h_m_orgs_untreated.intergrated <- CellCycleScoring(our_h_m_orgs_untreated.intergrated, s.features = s.genes, g2m.features = g2m.genes)
+
+DimPlot(our_h_m_orgs_untreated.intergrated, reduction = "umap", split.by = "Phase")
+
+```
+
+
+```{r}
+
+#Rename clusters and plot
+our_h_m_orgs_untreated.intergrated_names <- RenameIdents(our_h_m_orgs_untreated.intergrated,  `1` = "UHM1. LASP1", `2` = "UHM2. BMyo1",`3` = "UHM3. LHS1 (Proliferating)",`4` = "UHM4. LHS2", `5` = "UHM5. LHS3 (Proliferating)", `6` = "UHM6. BMyo2", `7`  = "UHM7. LHS4 (Proliferating")
+
+
+our_h_m_orgs_untreated.intergrated_numbers <- RenameIdents(our_h_m_orgs_untreated.intergrated,  `1` = "UHM1", `2` = "UHM2",`3` = "UHM3",`4` = "UHM4", `5` = "UHM5", `6` = "UHM6", `7` = "UHM7")
+
+#UMAP plot
+DimPlot(our_h_m_orgs_untreated.intergrated_names, reduction = "umap", label = FALSE) 
+
+#Split by condition
+DimPlot(our_h_m_orgs_untreated.intergrated_names, reduction = "umap", label = TRUE, split.by = "Origin") 
+DimPlot(our_h_m_orgs_untreated.intergrated_numbers, reduction = "umap", label = TRUE, split.by = "Origin") 
+
+#For paper: 
+DotPlot(our_h_m_orgs_untreated.intergrated_numbers,features = gene_markers_human)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=6))
+
+
+```
+
+```{r}
+
+#Percentages per cluster
+our_h_m_orgs_untreated.intergrated@meta.data %>%
+  group_by(seurat_clusters, Origin) %>%
+  count() %>%
+  group_by(Origin) %>%
+  mutate(percent=100*n/sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=seurat_clusters,y=percent, fill= Origin)) +
+  geom_col() +
+  ggtitle("Percentage of Cells in Each Clusters per Sample")+
+  theme_classic()
+
+
+```
+
+```{r}
+
+#Save
+saveRDS(our_h_m_orgs_untreated.intergrated, file = "/path/to/AK01_rEC_mouse_orgs_unt.rds")
+
+our_h_m_orgs_untreated.intergrated <- readRDS(file = "/path/to/AK01_rEC_mouse_orgs_unt.rds")
+
+
+```
+
+
+```{r}
+
+#Analysis of EPP-treated organoids from both humans and mice
+
+#Subset EPP murine organoid samples
+EPP_mouse <- subset(untreated_EPP, subset = Condition == "Female EPP")
+
+#Add labels
+EPP_mouse@meta.data$Summary<- NA
+EPP_mouse@meta.data[grepl("3",row.names(EPP_mouse@meta.data)),]$Summary <- "EPP-treated mouse organoids"
+
+#Modify orig.ident for clustering with human samples
+EPP_mouse@meta.data$orig.ident<- NA
+EPP_mouse@meta.data[grepl("3",row.names(EPP_mouse@meta.data)),]$orig.ident <- "EPP_mouse"
+
+
+#Convert mouse gene names to human orthologs
+Mouse_Human_names = read.csv("/Users/ruiz/Documents/human_mouse_orthologs.csv") #column names - Human orthologs and EPP_mouse.genes (mouse genes- modified to match name of your object)
+               
+#Merge by same column names with desired object
+convert <- merge(EPP_mouse@assays$RNA@data, Mouse_Human_names, by.x = 'row.names', by.y = 'EPP_mouse.genes')
+
+#remove row names
+rownames(convert) <- convert$Human_ortholog
+convert <- within(convert, rm("Row.names","Human_ortholog"))
+
+#create new assay
+human_convert_assay <- CreateAssayObject(convert)
+
+#add to object
+EPP_mouse[["HumanConvert"]] <- human_convert_assay
+ DefaultAssay(EPP_mouse) <- "HumanConvert"
+ 
+
+
+```
+
+
+```{r}
+
+#Isolate human organoid EPP-treated cells
+AK01_rEC_EPP <- subset(AK01_rEC, subset = Summary == "2. Early treated human organoids" | Summary == "3. Late treated human organoids")
+
+#Add column to organize conditions
+AK01_rEC_EPP@meta.data$orig.ident<- NA
+
+#Adding column based on other column:
+AK01_rEC_EPP@meta.data <- AK01_rEC_EPP@meta.data %>%
+  mutate(orig.ident = case_when(
+    endsWith(ID, "D10") ~ "D10",
+    endsWith(ID, "D21A") ~ "D21A",
+    endsWith(ID, "D21B") ~ "D21B"
+    ))
+
+#Add HumanConvert assay to compare with mice
+AK01_rEC_EPP[["HumanConvert"]] <- AK01_rEC_EPP@assays$RNA
+ DefaultAssay(AK01_rEC_EPP) <- "HumanConvert"
+
+
+```
+
+```{r}
+
+#Integration
+
+#Separate early and late treated human organoids to minimize batch effects
+D10 <- subset(AK01_rEC_EPP, subset = orig.ident == "D10" )
+D21 <- subset(AK01_rEC_EPP, subset = orig.ident == "D21A" | orig.ident == "D21B" )
+
+
+#Create list of objects to integrate
+EPP_mouse_human.list <- list(EPP_mouse, D10, D21)
+
+# Run Normal PreProcessing on Each EPP_mouse_human
+for (i in 1:length(EPP_mouse_human.list)) {
+    EPP_mouse_human.list[[i]] <-
+        NormalizeData(EPP_mouse_human.list[[i]], verbose = FALSE)
+    EPP_mouse_human.list[[i]] <-
+        FindVariableFeatures(
+            EPP_mouse_human.list[[i]],
+            selection.method = "vst",
+            nfeatures = 2000,
+            verbose = FALSE
+        )
+}
+
+gc()
+
+
+#Integrate
+EPP_mouse_human.anchors <-
+    FindIntegrationAnchors(object.list = EPP_mouse_human.list, dims = 1:30)
+EPP_mouse_human.intergrated <-
+    IntegrateData(anchorset = EPP_mouse_human.anchors, dims = 1:30)
+
+
+```
+
+```{r}
+
+#Normal processing
+
+DefaultAssay(EPP_mouse_human.intergrated) <- "integrated"
+EPP_mouse_human.intergrated <- FindVariableFeatures(EPP_mouse_human.intergrated, selection.method = "vst", nfeatures = 2000)
+EPP_mouse_human.intergrated <- ScaleData(EPP_mouse_human.intergrated)
+EPP_mouse_human.intergrated <- RunPCA(EPP_mouse_human.intergrated, features = VariableFeatures(EPP_mouse_human.intergrated)) 
+DimPlot(EPP_mouse_human.intergrated, reduction = "pca", group.by = "orig.ident")
+ElbowPlot(EPP_mouse_human.intergrated)
+
+```
+
+```{r}
+#using dims of 15
+
+EPP_mouse_human.intergrated <- FindNeighbors(EPP_mouse_human.intergrated, dims = 1:15)
+
+# Select a range of resolutions
+resolution.range <- seq(from = 0.1, to = 0.6, by = 0.1)
+
+# Find clusters using a range of resolutions
+EPP_mouse_human.intergrated <- FindClusters(object = EPP_mouse_human.intergrated, resolution = resolution.range)
+
+clustree(EPP_mouse_human.intergrated) #choosing 0.3 resolution or less based on Clustree
+```
+
+```{r}
+
+#Clustering
+EPP_mouse_human.intergrated <- FindClusters(object = EPP_mouse_human.intergrated, resolution = 0.3)
+
+#Reduce dimensions
+EPP_mouse_human.intergrated <- RunUMAP(EPP_mouse_human.intergrated, dims = 1:15)
+
+#Rename clusters starting from 1 instead of 0
+EPP_mouse_human.intergrated$seurat_clusters <- as.factor(as.numeric(as.character(EPP_mouse_human.intergrated$seurat_clusters)) + 1)
+EPP_mouse_human.intergrated <- RenameIdents(EPP_mouse_human.intergrated, `0` = "1", `1` = "2", `2` = "3",`3` = "4",`4` = "5", `5` = "6", `6` = "7", `7` = "8", `8` = "9")
+
+#Plot UMAP
+DimPlot(EPP_mouse_human.intergrated, reduction = "umap", label = TRUE) 
+
+#Add grouping
+EPP_mouse_human.intergrated_numbers@meta.data$Origin <- NA
+EPP_mouse_human.intergrated_numbers@meta.data <- EPP_mouse_human.intergrated_numbers@meta.data %>%
+  mutate(Origin = case_when(
+    endsWith(orig.ident, "D10") ~ "1. EPP-treated human organoids",
+    endsWith(orig.ident, "D21A") ~ "1. EPP-treated human organoids",
+    endsWith(orig.ident, "D21B") ~ "1. EPP-treated human organoids",
+    endsWith(Condition, "Female EPP") ~ "2. EPP-treated murine organoids"
+    ))
+
+
+#Split plot by organized conditions
+DimPlot(EPP_mouse_human.intergrated, reduction = "umap", label = TRUE, split.by = "Origin") 
+
+
+saveRDS(EPP_mouse_human.intergrated, file = "/path/to/int_AK01_EPP_mouse_orgs.rds")
+
+EPP_mouse_human.intergrated <- readRDS(file = "/path/to/int_AK01_EPP_mouse_orgs.rds")
+
+```
+
+```{r}
+
+#Basic markers
+DefaultAssay(EPP_mouse_human.intergrated) <- "HumanConvert"
+DotPlot(EPP_mouse_human.intergrated,features = c("EPCAM", "KRT8", "KRT18", "KRT5", "KRT14", "KRT7", "OXTR", "CSN2", "CSN3", "PRLR", "PGR", "ESR1"), col.min = 0)+RotatedAxis() 
+
+
+```
+
+```{r}
+
+#Top DEGs
+EPP_mouse_human.intergrated.markers <- FindAllMarkers(EPP_mouse_human.intergrated, only.pos = TRUE)
+
+EPP_mouse_human.intergrated.top10 <- EPP_mouse_human.intergrated.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = avg_log2FC)
+
+```
+
+
+```{r}
+
+#Dotplot of defining markers
+Top_markers <- c("KRT8", "KRT18", "CSN3", "CHI3L1", "LCN2", "IGFBP5", "LALBA", "ALDOC", "APOD", "CRISPLD2", "CSN1S1", "FDCSP", "KRT14", "KRT6A", "KRT17", "KRT5", "GPX3", "PRLR", "HP", "PLAC8", "RGS2", "GLUL", "ACOT1", "CSN1S2BP", "WNT4", "GSN", "CRIP1", "RARRES1", "KRT7", "TACSTD2", "TFCP2L1", "KRT19", "VEGFA", "SCD", "TSC22D3", "ZFAS1", "SNHG1", "SNHG6", "HMGCS1", "SNHG7", "ACTA2", "APOE", "TAGLN", "TPM2", "SPARC", "RBP1", "MYL9", "IL17B", "UBE2C", "CCNB1", "UBE2S", "PTTG1", "WFDC12", "H2AFZ", "CKS2", "HMGB2", "MKI67", "CENPF", "TOP2A", "ASPM", "HMGB2", "RAN")
+
+Top_markers <- unique(Top_markers)
+
+DotPlot(EPP_mouse_human.intergrated,features = Top_markers)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))
+
+
+```
+
+
+```{r}
+
+#Cell cycle scoring
+EPP_mouse_human.intergrated <- CellCycleScoring(EPP_mouse_human.intergrated, s.features = s.genes, g2m.features = g2m.genes)
+DimPlot(EPP_mouse_human.intergrated, reduction = "umap", split.by = "Phase")
+
+
+```
+
+```{r}
+
+#Correct names
+EPP_mouse_human.intergrated_names <- RenameIdents(EPP_mouse_human.intergrated,  `1` = "PMH1. LASP1", `2` = "PMH2. LHS1",`3` = "PMH3. LHS2",`4` = "PMH4. LHS3", `5` = "PMH5. LHS4", `6` = "PMH6. LHS5 (Proliferating)", `7` = "PMH7. BMyo1", `8` = "PMH8. LASP2 (Proliferating)", `9` = "PMH9. BL")
+
+#Plot UMAP
+DimPlot(EPP_mouse_human.intergrated_names, reduction = "umap", label = FALSE) 
+
+#Numbering
+EPP_mouse_human.intergrated_numbers <- RenameIdents(EPP_mouse_human.intergrated,  `1` = "PMH1", `2` = "PMH2",`3` = "PMH3",`4` = "PMH4", `5` = "PMH5", `6` = "PMH6", `7` = "PMH7", `8` = "PMH8", `9` = "PMH9")
+
+
+#Plot UMAP
+DimPlot(EPP_mouse_human.intergrated_numbers, reduction = "umap", label = TRUE) 
+
+#Split by condition
+DimPlot(EPP_mouse_human.intergrated_numbers, reduction = "umap", label = TRUE, split.by = "Origin") 
+DimPlot(EPP_mouse_human.intergrated_names, reduction = "umap", label = TRUE, split.by = "Origin")
+
+
+
+```
+
+```{r}
+
+#Build dendrogram to re-order clusters based on their relationship 
+
+EPP_mouse_human.intergrated_numbers <- BuildClusterTree(EPP_mouse_human.intergrated_numbers,dims=1:10)
+
+plot(EPP_mouse_human.intergrated_numbers@tools$BuildClusterTree)
+
+levels(EPP_mouse_human.intergrated_numbers) <- c("PMH7", "PMH2", "PMH1", "PMH5", "PMH6", "PMH8", "PMH9", "PMH3", "PMH4")
+
+DotPlot(EPP_mouse_human.intergrated_numbers,features = Top_markers)+RotatedAxis()+coord_flip()+theme(axis.text.x=element_text(size=10),axis.text.y=element_text(size=10))
+
+
+```
+
+
+```{r}
+
+#Percentage per cluster
+
+EPP_mouse_human.intergrated@meta.data %>%
+  group_by(seurat_clusters, Origin) %>%
+  count() %>%
+  group_by(Origin) %>%
+  mutate(percent=100*n/sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=seurat_clusters,y=percent, fill= Origin)) +
+  geom_col() +
+  ggtitle("Percentage of Cells in Each Clusters per Sample")+
+  theme_classic()
+
+
+```
+
+
+
